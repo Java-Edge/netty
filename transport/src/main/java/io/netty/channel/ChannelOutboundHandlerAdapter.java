@@ -102,10 +102,10 @@ public class ChannelOutboundHandlerAdapter extends ChannelHandlerAdapter impleme
     }
 
     /**
-     * Calls {@link ChannelHandlerContext#write(Object, ChannelPromise)} to forward
-     * to the next {@link ChannelOutboundHandler} in the {@link ChannelPipeline}.
+     * 调用ChannelHandlerContext.write(Object, ChannelPromise)
+     * 转发到下一个ChannelOutboundHandler中ChannelPipeline
      *
-     * Sub-classes may override this method to change behavior.
+     * 子类可以重写此方法以更改行为
      */
     @Skip
     @Override

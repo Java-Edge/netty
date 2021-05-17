@@ -296,6 +296,7 @@ public abstract class AbstractChannel extends DefaultAttributeMap implements Cha
 
     @Override
     public ChannelFuture writeAndFlush(Object msg, ChannelPromise promise) {
+        // 整个 pipeline 重新走一遍
         return pipeline.writeAndFlush(msg, promise);
     }
 
@@ -699,7 +700,7 @@ public abstract class AbstractChannel extends DefaultAttributeMap implements Cha
 
             final boolean wasActive = isActive();
             final ChannelOutboundBuffer outboundBuffer = this.outboundBuffer;
-            this.outboundBuffer = null; // Disallow adding any messages and flushes to outboundBuffer.
+            this.outboundBuffer = null; // 禁止再添加任何消息并flush到 ou​​tboundBuffer。
             Executor closeExecutor = prepareToClose();
             if (closeExecutor != null) {
                 closeExecutor.execute(new Runnable() {
@@ -726,11 +727,11 @@ public abstract class AbstractChannel extends DefaultAttributeMap implements Cha
                 });
             } else {
                 try {
-                    // Close the channel and fail the queued messages in all cases.
+                    // 在所有情况下，都关闭 channel 并使排队的消息失败
                     doClose0(promise);
                 } finally {
                     if (outboundBuffer != null) {
-                        // Fail all the queued messages.
+                        // 使所有排队的消息失败
                         outboundBuffer.failFlushed(cause, notify);
                         outboundBuffer.close(closeCause);
                     }

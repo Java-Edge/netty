@@ -93,6 +93,7 @@ public abstract class SimpleChannelInboundHandler<I> extends ChannelInboundHandl
     public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
         boolean release = true;
         try {
+            // 类型匹配
             if (acceptInboundMessage(msg)) {
                 @SuppressWarnings("unchecked")
                 I imsg = (I) msg;
@@ -103,6 +104,7 @@ public abstract class SimpleChannelInboundHandler<I> extends ChannelInboundHandl
             }
         } finally {
             if (autoRelease && release) {
+                // 因为可能是堆外内存或内存池,所以需要释放ByteBuf
                 ReferenceCountUtil.release(msg);
             }
         }

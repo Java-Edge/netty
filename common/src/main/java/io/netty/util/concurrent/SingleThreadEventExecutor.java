@@ -376,13 +376,15 @@ public abstract class SingleThreadEventExecutor extends AbstractScheduledEventEx
         boolean ranAtLeastOne = false;
 
         do {
+            // 转移 ScheduledTaskQueue -> taskQueue
             fetchedAll = fetchFromScheduledTaskQueue();
             if (runAllTasksFrom(taskQueue)) {
                 ranAtLeastOne = true;
             }
-        } while (!fetchedAll); // keep on processing until we fetched all scheduled tasks.
+        } while (!fetchedAll); // 继续处理，直到我们获取了所有的Schedule任务
 
         if (ranAtLeastOne) {
+            // 记录最后执行的时间，以和静默期比较
             lastExecutionTime = ScheduledFutureTask.nanoTime();
         }
         afterRunningAllTasks();
@@ -428,6 +430,7 @@ public abstract class SingleThreadEventExecutor extends AbstractScheduledEventEx
             return false;
         }
         for (;;) {
+            // 继续执行未完成的任务
             safeExecute(task);
             task = pollTaskFrom(taskQueue);
             if (task == null) {
@@ -763,6 +766,7 @@ public abstract class SingleThreadEventExecutor extends AbstractScheduledEventEx
             gracefulShutdownStartTime = ScheduledFutureTask.nanoTime();
         }
 
+        // 有 task/hook 在里面,执行他们且不让其关闭,因为静默期又有任务做了
         if (runAllTasks() || runShutdownHooks()) {
             if (isShutdown()) {
                 // Executor shut down - no new tasks anymore.
@@ -781,15 +785,18 @@ public abstract class SingleThreadEventExecutor extends AbstractScheduledEventEx
 
         final long nanoTime = ScheduledFutureTask.nanoTime();
 
+        // 是否超过最大允许时间
         if (isShutdown() || nanoTime - gracefulShutdownStartTime > gracefulShutdownTimeout) {
+            // 是,需要关闭了,不再等待
             return true;
         }
-
+        // 如果静默期做了任务还不关闭
         if (nanoTime - lastExecutionTime <= gracefulShutdownQuietPeriod) {
             // Check if any tasks were added to the queue every 100ms.
             // TODO: Change the behavior of takeTask() so that it returns on timeout.
             taskQueue.offer(WAKEUP_TASK);
             try {
+                // sleep 100ms 再检查下
                 Thread.sleep(100);
             } catch (InterruptedException e) {
                 // Ignore
@@ -798,8 +805,8 @@ public abstract class SingleThreadEventExecutor extends AbstractScheduledEventEx
             return false;
         }
 
-        // No tasks were added for last quiet period - hopefully safe to shut down.
-        // (Hopefully because we really cannot make a guarantee that there will be no execute() calls by a user.)
+        // quiet period没有任务 - 期望能安全关闭了
+        // 期望如此，因为netty确实无法保证用户不会调用execute()
         return true;
     }
 
@@ -989,6 +996,7 @@ public abstract class SingleThreadEventExecutor extends AbstractScheduledEventEx
             updateLastExecutionTime();
             try {
                 SingleThreadEventExecutor.this.run();
+                // 关闭成功
                 success = true;
             } catch (Throwable t) {
                 logger.warn("Unexpected exception from an event executor: ", t);

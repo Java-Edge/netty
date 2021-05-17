@@ -522,7 +522,7 @@ public final class NioEventLoop extends SingleThreadEventLoop {
             } catch (Throwable t) {
                 handleLoopException(t);
             }
-            // Always handle shutdown even if the loop processing threw an exception.
+            // 即使循环处理抛异常,也始终要处理关闭操作
             try {
                 if (isShuttingDown()) {
                     closeAll();
@@ -594,10 +594,16 @@ public final class NioEventLoop extends SingleThreadEventLoop {
     }
 
     void cancel(SelectionKey key) {
+        /**
+         * 没有特殊情况（配置了 so linger），下面这个 cancel，实际上没有执行
+         * 因为在关闭 channel 时已经执行过了
+         */
         key.cancel();
         cancelledKeys ++;
+        // 当处理一批事件时，发现很多连接都断了（默认 256）
         if (cancelledKeys >= CLEANUP_INTERVAL) {
             cancelledKeys = 0;
+            // 这时后面的事件可能都失败了，所以不妨 select again
             needsToSelectAgain = true;
         }
     }
@@ -756,6 +762,7 @@ public final class NioEventLoop extends SingleThreadEventLoop {
     }
 
     private void closeAll() {
+        // 去除已被 cancel 的 key
         selectAgain();
         Set<SelectionKey> keys = selector.keys();
         Collection<AbstractNioChannel> channels = new ArrayList<AbstractNioChannel>(keys.size());
@@ -770,7 +777,7 @@ public final class NioEventLoop extends SingleThreadEventLoop {
                 invokeChannelUnregistered(task, k, null);
             }
         }
-
+        // 循环关闭掉所有的 channel
         for (AbstractNioChannel ch: channels) {
             ch.unsafe().close(ch.unsafe().voidPromise());
         }

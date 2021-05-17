@@ -68,6 +68,7 @@ import io.netty.channel.ChannelHandlerContext;
  * lengthFieldLength   = 2
  * lengthAdjustment    = 0
  * <b>initialBytesToStrip</b> = <b>2</b> (= the length of the Length field)
+ * initialBytesToStrip默认为 0，如果不去初始化设置该值，就会解析 Length 字段，假设使用的 json 直接 json 解析报错.
  *
  * BEFORE DECODE (14 bytes)         AFTER DECODE (12 bytes)
  * +--------+----------------+      +----------------+
@@ -125,8 +126,8 @@ import io.netty.channel.ChannelHandlerContext;
  * positive <tt>lengthAdjustment</tt> so that the decoder counts the extra
  * header into the frame length calculation.
  * <pre>
- * lengthFieldOffset   = 0
- * lengthFieldLength   = 3
+ * lengthFieldOffset   = 0 长度域在数据包最前面表示无偏移
+ * lengthFieldLength   = 3 长度域的长度为3
  * <b>lengthAdjustment</b>    = <b>2</b> (= the length of Header 1)
  * initialBytesToStrip = 0
  *

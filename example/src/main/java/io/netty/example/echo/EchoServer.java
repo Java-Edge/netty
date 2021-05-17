@@ -35,6 +35,7 @@ import io.netty.handler.ssl.util.SelfSignedCertificate;
 
 /**
  * Echoes back any received data from a client.
+ * 回显从客户端收到的所有数据。
  */
 public final class EchoServer {
 
@@ -86,9 +87,10 @@ public final class EchoServer {
             ChannelFuture f = b.bind(PORT).sync();
 
             // 等待直至 server socket 关闭
-            f.channel().closeFuture().sync();
+            // 测试优雅关闭时先注释掉
+            // f.channel().closeFuture().sync();
         } finally {
-            // Shut down all event loops to terminate all threads.
+            // 关闭所有event loop以终止所有线程
             bossGroup.shutdownGracefully();
             workerGroup.shutdownGracefully();
         }

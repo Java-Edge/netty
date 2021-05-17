@@ -70,8 +70,8 @@ public abstract class MessageToMessageEncoder<I> extends ChannelOutboundHandlerA
     }
 
     /**
-     * Returns {@code true} if the given message should be handled. If {@code false} it will be passed to the next
-     * {@link ChannelOutboundHandler} in the {@link ChannelPipeline}.
+     * 如果应该处理给定的消息，则返回true
+     * 如果为false,它将被传递到ChannelPipeline的下一个ChannelOutboundHandler
      */
     public boolean acceptOutboundMessage(Object msg) throws Exception {
         return matcher.match(msg);

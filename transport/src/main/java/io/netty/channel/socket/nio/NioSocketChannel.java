@@ -388,7 +388,7 @@ public class NioSocketChannel extends AbstractNioByteChannel implements io.netty
             if (in.isEmpty()) {
                 // 所有都写完了，所以clear OP_WRITE，不用也无需写 16 次
                 clearOpWrite();
-                // Directly return here so incompleteWrite(...) is not called.
+                // 这里直接返回,因此不会调用incompleteWrite
                 return;
             }
 
@@ -459,8 +459,16 @@ public class NioSocketChannel extends AbstractNioByteChannel implements io.netty
                     // We need to cancel this key of the channel so we may not end up in a eventloop spin
                     // because we try to read or write until the actual close happens which may be later due
                     // SO_LINGER handling.
+                    // Linger逗留，意味着关闭 socket 连接时会发生阻塞，那阻塞多久呢？取决于底层的数据是否发送成功了。
+                    // 如果一直不成功，就需要设置 linger 到底逗留多久
+                    // 我们需要取消channel的key，因此我们可能不会以eventloop spin结束
+                    // 因为我们尝试读取或写入直到实际关闭发生，否则可能因为SO_LINGER处理而延迟。
                     // See https://github.com/netty/netty/issues/4449
+                    // 需要逗留到数据收发完成或设置的时间，所以提交到另外的 Executor 中执行
+                    // 提前 Deregister,逗留期不再接收新数据，这也是其包含 selection key 的 cancel 的原因之一
+                    // cancel 各种感兴趣的事件,因为如果不 cancel，在关闭过程中又发生了阻塞,这时由于 channel 没被关闭，又开始了读事件,就没法断开连接了
                     doDeregister();
+                    // 由于逗留会发生阻塞，就会影响到 NioEventLoop,进而影响到所有 channel 的执行,所以在这里单独返回而不是在NioEventLoop中返回
                     return GlobalEventExecutor.INSTANCE;
                 }
             } catch (Throwable ignore) {

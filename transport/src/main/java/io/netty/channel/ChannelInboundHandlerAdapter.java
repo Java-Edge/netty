@@ -82,10 +82,10 @@ public class ChannelInboundHandlerAdapter extends ChannelHandlerAdapter implemen
     }
 
     /**
-     * Calls {@link ChannelHandlerContext#fireChannelRead(Object)} to forward
-     * to the next {@link ChannelInboundHandler} in the {@link ChannelPipeline}.
+     * 调用 ChannelHandlerContext#fireChannelRead(Object) 以
+     * 转发到 ChannelPipeline 的下一个 ChannelInboundHandler.
      *
-     * Sub-classes may override this method to change behavior.
+     * 子类可重写此方法以更改行为
      */
     @Skip
     @Override

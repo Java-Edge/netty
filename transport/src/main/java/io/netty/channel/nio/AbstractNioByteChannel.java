@@ -98,6 +98,8 @@ public abstract class AbstractNioByteChannel extends AbstractNioChannel {
 
         private void closeOnRead(ChannelPipeline pipeline) {
             if (!isInputShutdown0()) {
+                // 没有关闭input
+                // 判断是否支持半关，如果是，关闭读，触发事件
                 if (isAllowHalfClosure(config())) {
                     shutdownInput();
                     pipeline.fireUserEventTriggered(ChannelInputShutdownEvent.INSTANCE);
@@ -152,7 +154,7 @@ public abstract class AbstractNioByteChannel extends AbstractNioChannel {
                     // 读并且记录读了多少，若读满了，下次 continue 时就直接扩容
                     allocHandle.lastBytesRead(doReadBytes(byteBuf));
                     if (allocHandle.lastBytesRead() <= 0) {
-                        // nothing was read. release the buffer.
+                        // 无数据可读.释放缓存
                         byteBuf.release();
                         byteBuf = null;
                         close = allocHandle.lastBytesRead() < 0;

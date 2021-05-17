@@ -66,11 +66,12 @@ public final class EchoClient {
                          p.addLast(sslCtx.newHandler(ch.alloc(), HOST, PORT));
                      }
                      //p.addLast(new LoggingHandler(LogLevel.INFO));
-                     p.addLast(new EchoClientHandler());
+                     // 发送数据的，会频繁触发 OP_READ 事件,验证断开连接时先注释掉
+                     // p.addLast(new EchoClientHandler());
                  }
              });
 
-            // Start the client.
+            // 启动客户端
             ChannelFuture f = b.connect(HOST, PORT).sync();
 
             // Wait until the connection is closed.
