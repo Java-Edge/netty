@@ -2,14 +2,21 @@ package io.netty.example.helloworld;
 
 import io.netty.channel.EventLoopGroup;
 
+import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.nio.ByteBuffer;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
 import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
 import java.nio.channels.spi.SelectorProvider;
+import java.util.Arrays;
 import java.util.Iterator;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 /**
  * @author JavaEdge
@@ -58,13 +65,65 @@ public class NioServer {
                     // 把SocketChannel设置为非阻塞模式
                     socketChannel.configureBlocking(false);
                     System.out.println("服务器接受了一个新的连接 " + socketChannel.getRemoteAddress());
-//
-//                    //把SocketChannel注册到事件查询器上，并且关注OP_READ事件
-//                    //socketChannel.register(selector, SelectionKey.OP_READ);
+
+                    // 把SocketChannel注册到Selector，并关注OP_READ事件
+                    socketChannel.register(selector, SelectionKey.OP_READ);
 //                    eventLoopGroup.register(socketChannel, SelectionKey.OP_READ);
                 }
-             }
-        }
 
+                // 可读事件
+                if (key.isReadable()) {
+                    SocketChannel socketChannel = (SocketChannel) key.channel();
+                    ByteBuffer buffer = ByteBuffer.allocate(1024);
+                    try {
+                        int readNum = socketChannel.read(buffer);
+                        if (readNum == -1) {
+                            System.out.println("读取结束,关闭 socket");
+                            key.channel();
+                            socketChannel.close();
+                            break;
+                        }
+                        // 将Buffer从写模式切到读模式
+                        buffer.flip();
+                        byte[] bytes = new byte[readNum];
+                        buffer.get(bytes, 0, readNum);
+                        System.out.println(new String(bytes));
+
+/*                        byte[] response = "client hello".getBytes();
+                        // 清理了才可以重新使用
+                        buffer.clear();
+                        buffer.put(response);
+                        buffer.flip();
+                        // 该方法非阻塞的，如果此时无法写入也不会阻塞在此，而是直接返回 0 了
+                        socketChannel.write(buffer);
+
+                        */
+                        // 在 key 上附加一个对象
+                        key.attach("hello client".getBytes());
+                        // 把 key 关注的事件切换为写
+                        key.interestOps(SelectionKey.OP_WRITE);
+
+                    } catch (IOException e) {
+                        System.out.println("读取时发生异常,关闭 socket");
+                        // 取消 key
+                        key.channel();
+                    }
+                }
+
+                if (key.isWritable()) {
+                    SocketChannel socketChannel = (SocketChannel) key.channel();
+                    // 可写时再将那个对象拿出来
+                    byte[] bytes = (byte[]) key.attachment();
+                    key.attach(null);
+                    System.out.println("可写事件发生 写入消息" + Arrays.toString(bytes));
+                    if (bytes != null) {
+                        socketChannel.write(ByteBuffer.wrap(bytes));
+                    }
+
+                    // 写完后，就不需要写了，就切换为读事件   如果不写该行代码就会死循环
+                    key.interestOps(SelectionKey.OP_READ);
+                }
+            }
+        }
     }
 }
