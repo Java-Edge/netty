@@ -29,7 +29,9 @@ public class NioServer {
         // 把 ServerSocketChannel 注册到事件查询器上，并且感兴趣 OP_ACCEPT  事件
         serverChannel.register(selector, SelectionKey.OP_ACCEPT);
 
-        EventLoop eventLoop = new EventLoop();
+        // 创建【事件查询器】组
+        EventLoopGroup eventLoopGroup = new EventLoopGroup();
+
         while (true) {
             // 阻塞方法，等待系统有I/O事件发生
             int eventNum = selector.select();
@@ -57,7 +59,7 @@ public class NioServer {
 
                     // 把SocketChannel注册到Selector，并关注OP_READ事件
                     // socketChannel.register(selector, SelectionKey.OP_READ);
-                    eventLoop.register(socketChannel, SelectionKey.OP_READ);
+                    eventLoopGroup.register(socketChannel, SelectionKey.OP_READ);
                 }
             }
         }
