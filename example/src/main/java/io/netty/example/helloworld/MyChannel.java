@@ -20,6 +20,8 @@ public class MyChannel {
 
     private EventLoop eventLoop;
 
+    private PipeLine pipeLine;
+
     /**
      * 写数据的缓冲区
      */
@@ -28,6 +30,9 @@ public class MyChannel {
     public MyChannel(SocketChannel channel,EventLoop eventLoop) {
         this.channel = channel;
         this.eventLoop = eventLoop;
+        this.pipeLine = new PipeLine(this, eventLoop);
+        this.pipeLine.addLast(new MyHandler1());
+        this.pipeLine.addLast(new MyHandler2());
     }
 
     public void read(SelectionKey key) throws IOException {
@@ -43,19 +48,7 @@ public class MyChannel {
             }
             // 将Buffer从写模式切到读模式
             buffer.flip();
-            byte[] bytes = new byte[readNum];
-            // 客户端发来的数据
-            buffer.get(bytes, 0, readNum);
-            String clientData = new String(bytes);
-            System.out.println(clientData);
-
-            // 加入写缓冲区
-            writeQueue.add(ByteBuffer.wrap("hello JavaEdge".getBytes()));
-
-            if ("flush".equals(clientData)) {
-                // 把 key 关注的事件切换为写
-                key.interestOps(SelectionKey.OP_WRITE);
-            }
+            this.pipeLine.headCtx.fireChannelRead(buffer);
         } catch (IOException e) {
             System.out.println("读取时发生异常,关闭 socket");
             // 取消 key
