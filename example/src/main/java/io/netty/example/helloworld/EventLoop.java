@@ -35,7 +35,7 @@ public class EventLoop implements Runnable {
      * 把 channel 注册到 事件查询器
      */
     public void register(SocketChannel channel, int keyOps) {
-        // 将注册的逻辑封装成一个任务，因为不能让主线程执行，必须由 eventloop 的线程执行
+        // 将注册的逻辑封装成一个任务，因为不能让主线程执行，必须由 EventLoop 的线程执行
         taskQueue.add(() -> {
             try {
                 MyChannel myChannel = new MyChannel(channel, this);
@@ -75,6 +75,8 @@ public class EventLoop implements Runnable {
                         // 可读事件
                         if (key.isReadable()) {
                             myChannel.read(key);
+                            // 由于断开连接时，会走进读取结束，key 会被关闭，所以必须结束循环，防止走到后面逻辑
+                            break;
                         }
 
                         // 可写事件

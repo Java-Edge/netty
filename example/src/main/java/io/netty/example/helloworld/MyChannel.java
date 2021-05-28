@@ -30,7 +30,7 @@ public class MyChannel {
         this.eventLoop = eventLoop;
     }
 
-    public void read(SelectionKey key) {
+    public void read(SelectionKey key) throws IOException {
         SocketChannel socketChannel = (SocketChannel) key.channel();
         ByteBuffer buffer = ByteBuffer.allocate(1024);
         try {
@@ -60,6 +60,7 @@ public class MyChannel {
             System.out.println("读取时发生异常,关闭 socket");
             // 取消 key
             key.channel();
+            socketChannel.close();
         }
     }
 
