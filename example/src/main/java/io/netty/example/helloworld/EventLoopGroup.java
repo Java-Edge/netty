@@ -1,17 +1,7 @@
 package io.netty.example.helloworld;
 
 import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.nio.channels.ClosedChannelException;
-import java.nio.channels.SelectionKey;
-import java.nio.channels.Selector;
 import java.nio.channels.SocketChannel;
-import java.nio.channels.spi.SelectorProvider;
-import java.util.Arrays;
-import java.util.Iterator;
-import java.util.Queue;
-import java.util.Set;
-import java.util.concurrent.LinkedBlockingDeque;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -20,7 +10,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 public class EventLoopGroup {
 
-    private EventLoop[] eventLoops = new EventLoop[16];
+    private EventLoop[] eventLoops = new EventLoop[2];
 
     private final AtomicInteger idx = new AtomicInteger(0);
 
@@ -37,8 +27,6 @@ public class EventLoopGroup {
 
     /**
      * 其实啥也不干，直接找到一个EventLoop，丢给他干
-     * @param channel
-     * @param keyOps
      */
     public void register(SocketChannel channel, int keyOps) {
         next().register(channel, keyOps);

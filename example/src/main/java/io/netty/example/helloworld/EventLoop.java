@@ -38,7 +38,9 @@ public class EventLoop implements Runnable {
         // 将注册的逻辑封装成一个任务，因为不能让主线程执行，必须由 eventloop 的线程执行
         taskQueue.add(() -> {
             try {
-                channel.register(selector, keyOps);
+                MyChannel myChannel = new MyChannel(channel, this);
+                SelectionKey selectionKey = channel.register(selector, keyOps);
+                selectionKey.attach(myChannel);
             } catch (ClosedChannelException e) {
                 e.printStackTrace();
             }
@@ -47,6 +49,9 @@ public class EventLoop implements Runnable {
         selector.wakeup();
     }
 
+    /**
+     * 改造后的 EventLoop 职责就更单一了，只负责转发事件即可
+     */
     @Override
     public void run() {
         while (!Thread.interrupted()) {
@@ -64,57 +69,17 @@ public class EventLoop implements Runnable {
                         SelectionKey key = iterable.next();
                         iterable.remove();
 
+                        // myChannel中已经封装了 channel 和 selector 对应关系
+                        MyChannel myChannel = (MyChannel) key.attachment();
+
                         // 可读事件
                         if (key.isReadable()) {
-                            SocketChannel socketChannel = (SocketChannel) key.channel();
-                            ByteBuffer buffer = ByteBuffer.allocate(1024);
-                            try {
-                                int readNum = socketChannel.read(buffer);
-                                if (readNum == -1) {
-                                    System.out.println("读取结束,关闭 socket");
-                                    key.channel();
-                                    socketChannel.close();
-                                    break;
-                                }
-                                // 将Buffer从写模式切到读模式
-                                buffer.flip();
-                                byte[] bytes = new byte[readNum];
-                                buffer.get(bytes, 0, readNum);
-                                System.out.println(new String(bytes));
-
-/*                        byte[] response = "client hello".getBytes();
-                        // 清理了才可以重新使用
-                        buffer.clear();
-                        buffer.put(response);
-                        buffer.flip();
-                        // 该方法非阻塞的，如果此时无法写入也不会阻塞在此，而是直接返回 0 了
-                        socketChannel.write(buffer);
-
-                        */
-                                // 在 key 上附加一个对象
-                                key.attach("EventLoop says hello to client".getBytes());
-                                // 把 key 关注的事件切换为写
-                                key.interestOps(SelectionKey.OP_WRITE);
-
-                            } catch (IOException e) {
-                                System.out.println("读取时发生异常,关闭 socket");
-                                // 取消 key
-                                key.channel();
-                            }
+                            myChannel.read(key);
                         }
 
+                        // 可写事件
                         if (key.isWritable()) {
-                            SocketChannel socketChannel = (SocketChannel) key.channel();
-                            // 可写时再将那个对象拿出来
-                            byte[] bytes = (byte[]) key.attachment();
-                            key.attach(null);
-                            System.out.println("可写事件发生 写入消息" + Arrays.toString(bytes));
-                            if (bytes != null) {
-                                socketChannel.write(ByteBuffer.wrap(bytes));
-                            }
-
-                            // 写完后，就不需要写了，就切换为读事件   如果不写该行代码就会死循环
-                            key.interestOps(SelectionKey.OP_READ);
+                            myChannel.write(key);
                         }
                     }
                 }
