@@ -13,20 +13,7 @@ public class MyHandler1 implements Handler {
 
     @Override
     public void channelRead(HandlerContext ctx, Object msg) {
-//        byte[] bytes = new byte[readNum];
-//        // 客户端发来的数据
-//        buffer.get(bytes, 0, readNum);
-//        String clientData = new String(bytes);
-//        System.out.println(clientData);
-//
-//        // 加入写缓冲区
-//        writeQueue.add(ByteBuffer.wrap("hello JavaEdge".getBytes()));
-//
-//        if ("flush".equals(clientData)) {
-//            // 把 key 关注的事件切换为写
-//            key.interestOps(SelectionKey.OP_WRITE);
-//        }
-        log.debug("MyHandler2:" + msg);
+        log.debug(msg.toString());
         // 第一个处理器接收到的一定是ByteBuffer类型消息
 
         // 解码
@@ -34,7 +21,7 @@ public class MyHandler1 implements Handler {
         int limit = buffer.limit();
         byte[] content = new byte[limit];
         buffer.get(content);
-        // 解码后的数据
+        // 解码:将底层 socket 的 byte[]转换为对象的过程
         String string = new String(content);
         // 向后传递
         ctx.fireChannelRead(string);
@@ -43,13 +30,23 @@ public class MyHandler1 implements Handler {
         buffer.clear();
     }
 
+    /**
+     * @param msg 客户端传过来的对象，可以是 Bean类，可以是字符串。但这些东西底层socket可不认识
+     *            所以要经历编码,比如转换成socket认识的字节流
+     */
     @Override
     public void write(HandlerContext ctx, Object msg) {
-
+        log.debug("msg=" + msg);
+        // 因为最终要写给 socket，所以要把对象转换成二进制的字节，即【编码】
+        ByteBuffer buffer = ByteBuffer.wrap(msg.toString().getBytes());
+        // 传递给 pipeline
+        ctx.write(buffer);
     }
 
     @Override
     public void flush(HandlerContext ctx) {
-
+        // 向后传递
+        log.debug("flush");
+        ctx.flush();
     }
 }

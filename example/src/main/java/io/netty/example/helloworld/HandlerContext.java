@@ -1,5 +1,7 @@
 package io.netty.example.helloworld;
 
+import lombok.Getter;
+
 /**
  * 由于 mychannel 的 read/write 方法里有太多业务代码，作为框架，肯定是要暴露接口给应用开发人员使用
  * 在接口里给一个事件回调给 业务开发们使用
@@ -13,13 +15,13 @@ public class HandlerContext {
 
     private Handler handler;
 
+    @Getter
     private MyChannel myChannel;
 
     /**
      * 双向链表
      */
     HandlerContext prev;
-
     HandlerContext next;
 
     public HandlerContext(Handler handler, MyChannel myChannel) {
@@ -29,7 +31,6 @@ public class HandlerContext {
 
     /**
      * 当有消息从 mychannel 中读出来时，传到链中处理
-     * @param msg
      */
     public void fireChannelRead(Object msg) {
         // 找到下一个处理器
@@ -42,8 +43,7 @@ public class HandlerContext {
 
     /**
      * 写数据时，从后往前传递
-     *
-     * @param msg
+     * 注意，tailCtx 自己不会使用自己的处理器，而是找到它前面的 ctx 的处理器
      */
     public void write(Object msg) {
         HandlerContext prev = this.prev;
@@ -54,13 +54,11 @@ public class HandlerContext {
 
     /**
      * flush数据时，从后往前传递
-     *
-     * @param msg
      */
-    public void flush(Object msg) {
+    public void flush() {
         HandlerContext prev = this.prev;
         if (prev != null) {
-            prev.handler.write(prev, msg);
+            prev.handler.flush(prev);
         }
     }
 }

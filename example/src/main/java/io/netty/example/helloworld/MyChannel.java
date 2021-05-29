@@ -23,7 +23,7 @@ public class MyChannel {
     private PipeLine pipeLine;
 
     /**
-     * 写数据的缓冲区
+     * 写数据的(临时)缓冲区
      */
     private Queue<ByteBuffer> writeQueue = new ArrayBlockingQueue<>(16);
 
@@ -57,6 +57,9 @@ public class MyChannel {
         }
     }
 
+    /**
+     * EventLoop 里才能访问，不直接对外暴露,应该是被封装的，真正的往底层写数据的
+     */
     public void write(SelectionKey key) throws IOException {
         ByteBuffer byteBuffer;
         while ((byteBuffer = writeQueue.poll()) != null) {
@@ -65,5 +68,27 @@ public class MyChannel {
 
         // 写完后，就不需要写了，就切换为读事件   如果不写该行代码就会死循环
         key.interestOps(SelectionKey.OP_READ);
+    }
+
+    public void doWrite(Object msg) {
+        this.pipeLine.tailCtx.write(msg);
+    }
+
+    public void addWriteQueue(ByteBuffer buffer) {
+        writeQueue.add(buffer);
+    }
+
+    public void flush() {
+        this.pipeLine.tailCtx.flush();
+    }
+
+    /**
+     * 真正的写回客户端，由于 write 方法每次被调用后就切换为读事件了，
+     * 所以此时要触发更改事件类型，将缓存区队列一次性写完
+     *
+     * 因为切换为写事件后，EventLoop 接到写请求后，会立即触发写完队列
+     */
+    public void doFlush() {
+        this.channel.keyFor(eventLoop.getSelector()).interestOps(SelectionKey.OP_WRITE);
     }
 }

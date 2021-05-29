@@ -1,5 +1,7 @@
 package io.netty.example.helloworld;
 
+import lombok.Getter;
+
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
@@ -19,6 +21,7 @@ import java.util.concurrent.LinkedBlockingDeque;
  */
 public class EventLoop implements Runnable {
 
+    @Getter
     private Selector selector;
 
     private Thread thread;
