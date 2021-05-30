@@ -130,10 +130,10 @@ public class ChannelInboundHandlerAdapter extends ChannelHandlerAdapter implemen
     }
 
     /**
-     * Calls {@link ChannelHandlerContext#fireExceptionCaught(Throwable)} to forward
-     * to the next {@link ChannelHandler} in the {@link ChannelPipeline}.
+     * 调用 {@link ChannelHandlerContext#fireExceptionCaught(Throwable)} 传递到
+     * {@link ChannelPipeline} 中的下一个 {@link ChannelHandler}.
      *
-     * Sub-classes may override this method to change behavior.
+     * 子类可以重写该方法来改变行为。
      */
     @Skip
     @Override
