@@ -22,7 +22,7 @@ public class ByteBufTest {
         srcBuf.readByte();
         System.out.println(srcBuf.readerIndex() + "|" + srcBuf.writerIndex());
 
-        ByteBuf slice = srcBuf.slice(srcBuf.readerIndex(), srcBuf.readableBytes());
+        ByteBuf slice = srcBuf.readSlice(srcBuf.readableBytes());
         System.out.println(slice.readerIndex() + "|" + slice.writerIndex());
         System.out.println(slice.readByte());
         slice.setByte(1, 10);
