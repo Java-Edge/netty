@@ -13,23 +13,20 @@ public class ByteBufTest {
 
     public static void main(String[] args) {
         ByteBuf srcBuf = UnpooledByteBufAllocator.DEFAULT.heapBuffer(10);
-        srcBuf.writeByte(11);
-        srcBuf.writeByte(22);
-        srcBuf.writeByte(33);
-        srcBuf.writeByte(44);
-        srcBuf.writeByte(55);
-        System.out.println(srcBuf.readByte());
-        System.out.println(srcBuf.readByte());
-        System.out.println(srcBuf.readByte());
-        ByteBuf dupBuf = srcBuf.duplicate();
+        srcBuf.writeByte(1);
+        srcBuf.writeByte(2);
+        srcBuf.writeByte(3);
+        srcBuf.writeByte(4);
+        srcBuf.writeByte(5);
+        srcBuf.readByte();
+        srcBuf.readByte();
+        System.out.println(srcBuf.readerIndex() + "|" + srcBuf.writerIndex());
 
-        srcBuf.writeByte(66);
-
-        System.out.println(dupBuf.readerIndex() + "|" + dupBuf.writerIndex());
-        dupBuf.writeByte(77);
-
-        System.out.println(srcBuf.readByte());
-        System.out.println(srcBuf.readByte());
-        System.out.println(srcBuf.readByte());
+        ByteBuf slice = srcBuf.slice(srcBuf.readerIndex(), srcBuf.readableBytes());
+        System.out.println(slice.readerIndex() + "|" + slice.writerIndex());
+        System.out.println(slice.readByte());
+        slice.setByte(1, 10);
+        System.out.println(slice.readByte());
+        System.out.println(slice.readByte());
     }
 }
