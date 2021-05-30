@@ -34,15 +34,11 @@ import java.nio.charset.UnsupportedCharsetException;
  * This interface provides an abstract view for one or more primitive byte
  * arrays ({@code byte[]}) and {@linkplain ByteBuffer NIO buffers}.
  *
- * <h3>Creation of a buffer</h3>
- * 缓冲区的创建
+ * <h3>buffer的创建</h3>
  *
- * It is recommended to create a new buffer using the helper methods in
- * {@link Unpooled} rather than calling an individual implementation's
- * constructor.
- * 推荐使用 Unpooled 中的辅助方法创建一个新缓冲区，而不是调用单个实现的构造器。
+ * 推荐使用{@link Unpooled}中的辅助方法创建一个新buffer，而不是调用单个实现的构造器。
  *
- * <h3>Random Access Indexing</h3>
+ * <h3>随机访问Indexing</h3>
  *
  * Just like an ordinary primitive byte array, {@link ByteBuf} uses
  * <a href="http://en.wikipedia.org/wiki/Zero-based_numbering">zero-based indexing</a>.
