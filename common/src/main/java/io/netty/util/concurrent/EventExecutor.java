@@ -37,7 +37,7 @@ public interface EventExecutor extends EventExecutorGroup {
 
     /**
      * Calls {@link #inEventLoop(Thread)} with {@link Thread#currentThread()} as argument
-     * 外部线程去去调用一个事件循环组，
+     * 外部线程去调用一个事件循环组，
      * 需要判断当前线程是否在事件循环组里,即是否为一个EventLoop线程.
      */
     boolean inEventLoop();

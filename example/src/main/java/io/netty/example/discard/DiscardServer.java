@@ -46,29 +46,35 @@ public final class DiscardServer {
         } else {
             sslCtx = null;
         }
-
+        // 专门处理接收连接的，只用一个就够了(ServerSocketChannel)
         EventLoopGroup bossGroup = new NioEventLoopGroup(1);
+        // 专门处理 I/O 事件，一般设置为 256~512（SocketChannel）
         EventLoopGroup workerGroup = new NioEventLoopGroup();
         try {
+            // 启动引导类，可以让程序员按需配置信息
             ServerBootstrap b = new ServerBootstrap();
+            // 设置线程组
             b.group(bossGroup, workerGroup)
-             .channel(NioServerSocketChannel.class)
-             .handler(new LoggingHandler(LogLevel.INFO))
-             .childHandler(new ChannelInitializer<SocketChannel>() {
-                 @Override
-                 public void initChannel(SocketChannel ch) {
-                     ChannelPipeline p = ch.pipeline();
-                     if (sslCtx != null) {
-                         p.addLast(sslCtx.newHandler(ch.alloc()));
-                     }
-                     p.addLast(new DiscardServerHandler());
-                 }
-             });
+                    // 设置 I/O 模型，这里使用 NIO 模型
+                    .channel(NioServerSocketChannel.class)
+                    .handler(new LoggingHandler(LogLevel.INFO))
+                    // 设置 channel-pipeline 中的 handler（编解码器）
+                    .childHandler(new ChannelInitializer<SocketChannel>() {
+                        @Override
+                        public void initChannel(SocketChannel ch) {
+                            ChannelPipeline p = ch.pipeline();
+                            if (sslCtx != null) {
+                                p.addLast(sslCtx.newHandler(ch.alloc()));
+                            }
+                            p.addLast(new DiscardServerHandler());
+                            p.addLast(new SecondHandler());
+                        }
+                    });
 
-            // Bind and start to accept incoming connections.
+            // 绑定端口 Bind and start to accept incoming connections.
             ChannelFuture f = b.bind(PORT).sync();
 
-            // Wait until the server socket is closed.
+            // 阻塞当前主线程，直到server socket被关闭，否则执行下去就是优雅停机了
             // In this example, this does not happen, but you can do that to gracefully
             // shut down your server.
             f.channel().closeFuture().sync();

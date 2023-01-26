@@ -18,6 +18,7 @@ public class DiscardServerHandler extends ChannelInboundHandlerAdapter {
      * 当有事件发生时，会调用
      * 这里重写channelRead事件处理器方法。每当从客户端接收到新数据时，就使用接收到的消息来调用此方法
      * 此示例中，接收到的消息的类型为ByteBuf
+     * 该处理器相当于解码器
      */
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) {
@@ -40,7 +41,10 @@ public class DiscardServerHandler extends ChannelInboundHandlerAdapter {
             int count = byteBuf.readableBytes();
             byte[] content = new byte[count];
             byteBuf.readBytes(content);
-            System.out.println(new String(content));
+            // 转成字符串
+            String string = new String(content);
+            // 向后传递
+            ctx.fireChannelRead(string);
         } finally {
             byteBuf.release();
         }

@@ -31,7 +31,9 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 public abstract class MultithreadEventExecutorGroup extends AbstractEventExecutorGroup {
 
-    // 多线程版本的也不过是挑选一个事件执行器出来
+    /**
+     * 多线程版本的也不过是挑选一个事件执行器出来
+     */
     private final EventExecutor[] children;
     private final Set<EventExecutor> readonlyChildren;
     private final AtomicInteger terminatedChildren = new AtomicInteger();
