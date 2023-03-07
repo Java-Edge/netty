@@ -124,8 +124,11 @@ public final class PlatformDependent {
     private static final String LINUX_ID_LIKE_PREFIX = "ID_LIKE=";
     public static final boolean BIG_ENDIAN_NATIVE_ORDER = ByteOrder.nativeOrder() == ByteOrder.BIG_ENDIAN;
 
-    private static final Cleaner NOOP = buffer -> {
-        // NOOP
+    private static final Cleaner NOOP = new Cleaner() {
+        @Override
+        public void freeDirectBuffer(ByteBuffer buffer) {
+            // NOOP
+        }
     };
 
     static {
@@ -946,8 +949,8 @@ public final class PlatformDependent {
         }
 
         static <T> Queue<T> newMpscQueue() {
-            return USE_MPSC_CHUNKED_ARRAY_QUEUE ? new MpscUnboundedArrayQueue<>(MPSC_CHUNK_SIZE)
-                                                : new MpscUnboundedAtomicArrayQueue<>(MPSC_CHUNK_SIZE);
+            return USE_MPSC_CHUNKED_ARRAY_QUEUE ? new MpscUnboundedArrayQueue<T>(MPSC_CHUNK_SIZE)
+                    : new MpscUnboundedAtomicArrayQueue<T>(MPSC_CHUNK_SIZE);
         }
     }
 
