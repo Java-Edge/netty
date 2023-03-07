@@ -289,6 +289,7 @@ public class IdleStateHandler extends ChannelDuplexHandler {
     @Override
     public void channelReadComplete(ChannelHandlerContext ctx) throws Exception {
         if ((readerIdleTimeNanos > 0 || allIdleTimeNanos > 0) && reading) {
+            // 读取完数据后，会更新
             lastReadTime = ticksInNanos();
             reading = false;
         }
@@ -364,8 +365,8 @@ public class IdleStateHandler extends ChannelDuplexHandler {
     }
 
     /**
-     * Is called when an {@link IdleStateEvent} should be fired. This implementation calls
-     * {@link ChannelHandlerContext#fireUserEventTriggered(Object)}.
+     * 触发 {@link IdleStateEvent} 时调用。此实现调用 {@link ChannelHandlerContext#fireUserEventTriggered(Object)}
+     * 即调用下一个 handler，即可走到最后我们业务自定义的超时处理逻辑里。
      */
     protected void channelIdle(ChannelHandlerContext ctx, IdleStateEvent evt) throws Exception {
         ctx.fireUserEventTriggered(evt);
@@ -502,17 +503,25 @@ public class IdleStateHandler extends ChannelDuplexHandler {
             long nextDelay = readerIdleTimeNanos;
             if (!reading) {
                 // 计算是否 idle 的关键
+                /**
+                 * 当前时间 - 上次读数据的时间 = 读的实际间隔时间
+                 * 预设超时时间 - 读的实际间隔时间即可知道是否超时
+                 */
                 nextDelay -= ticksInNanos() - lastReadTime;
             }
 
             if (nextDelay <= 0) {
-                // Reader空闲 - 设置新的超时并通知回调
+                /**
+                 * Reader空闲
+                 * 设置新的超时并通知回调（注意这里使用预设超时时间，开启下一段超时统计，与下面的 else 分支形成对比）
+                 */
                 readerIdleTimeout = schedule(ctx, this, readerIdleTimeNanos, TimeUnit.NANOSECONDS);
 
                 boolean first = firstReaderIdleEvent;
                 firstReaderIdleEvent = false;
 
                 try {
+                    // 超时后，新建一个读超时时间
                     IdleStateEvent event = newIdleStateEvent(IdleState.READER_IDLE, first);
                     channelIdle(ctx, event);
                 } catch (Throwable t) {
@@ -520,7 +529,7 @@ public class IdleStateHandler extends ChannelDuplexHandler {
                 }
             } else {
                 // 重新起一个监测 task，用 nextdelay 时间
-                // 读取发生在超时前 - 设置具有更短延迟的新超时
+                // 读取发生在超时前 - 设置具有更短延迟的新超时时间（而非继续以预设超时时间重新统计）
                 readerIdleTimeout = schedule(ctx, this, nextDelay, TimeUnit.NANOSECONDS);
             }
         }

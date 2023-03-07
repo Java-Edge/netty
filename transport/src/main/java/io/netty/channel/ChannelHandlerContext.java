@@ -29,23 +29,34 @@ import java.nio.channels.Channels;
  * and other handlers. Among other things a handler can notify the next {@link ChannelHandler} in the
  * {@link ChannelPipeline} as well as modify the {@link ChannelPipeline} it belongs to dynamically.
  *
+ * 使 {@link ChannelHandler} 能与其 {@link ChannelPipeline} 和其他处理器协作。
+ * 此外，处理器还可通知 {@link ChannelPipeline} 中的下一个 {@link ChannelHandler}
+ * 以及动态修改它所属的 {@link ChannelPipeline}。
+ *
  * <h3>Notify</h3>
+ * 通知
  *
  * You can notify the closest handler in the same {@link ChannelPipeline} by calling one of the various methods
  * provided here.
+ * 可通过调用此处提供的各种方法之一来通知同一 {@link ChannelPipeline} 中最接近的处理器。
  *
  * Please refer to {@link ChannelPipeline} to understand how an event flows.
  *
  * <h3>Modifying a pipeline</h3>
+ * 修改pipeline
  *
  * You can get the {@link ChannelPipeline} your handler belongs to by calling
  * {@link #pipeline()}.  A non-trivial application could insert, remove, or
  * replace handlers in the pipeline dynamically at runtime.
+ * 可通过调用 {@link pipeline（）} 来获取您的处理程序所属的 {@link ChannelPipeline}。
+ * 重要的应用程序可以在运行时动态插入、删除或替换管道中的处理程序。
  *
  * <h3>Retrieving for later use</h3>
+ * 检索供以后使用
  *
  * You can keep the {@link ChannelHandlerContext} for later use, such as
  * triggering an event outside the handler methods, even from a different thread.
+ * 可以保留 {@link ChannelHandlerContext} 供以后使用，例如在处理程序方法外部触发事件，甚至从不同的线程触发事件。
  * <pre>
  * public class MyHandler extends {@link ChannelDuplexHandler} {
  *
@@ -63,13 +74,17 @@ import java.nio.channels.Channels;
  * </pre>
  *
  * <h3>Storing stateful information</h3>
+ * 存储有状态信息
  *
  * {@link #attr(AttributeKey)} allow you to
  * store and access stateful information that is related with a {@link ChannelHandler} / {@link Channel} and its
  * context. Please refer to {@link ChannelHandler} to learn various recommended
  * ways to manage stateful information.
+ * {@link #attr(AttributeKey)} 允许您存储和访问与 {@link ChannelHandler} {@link Channel} 及其上下文相关的有状态信息。
+ * 参阅 {@link ChannelHandler} 以了解管理有状态信息的各种推荐方法。
  *
  * <h3>A handler can have more than one {@link ChannelHandlerContext}</h3>
+ * 一个处理程序可有多个 {@link ChannelHandlerContext}
  *
  * Please note that a {@link ChannelHandler} instance can be added to more than
  * one {@link ChannelPipeline}.  It means a single {@link ChannelHandler}
@@ -78,6 +93,10 @@ import java.nio.channels.Channels;
  * {@link ChannelHandlerContext}s if it is added to one or more {@link ChannelPipeline}s more than once.
  * Also note that a {@link ChannelHandler} that is supposed to be added to multiple {@link ChannelPipeline}s should
  * be marked as {@link io.netty.channel.ChannelHandler.Sharable}.
+ * 一个 {@link ChannelHandler} 实例可以添加到多个 {@link ChannelPipeline}。
+ * 这意味着单个 {@link ChannelHandler} 实例可以有多个 {@link ChannelHandlerContext}，
+ * 因此，如果将单个实例多次添加到一个或多个 {@link ChannelPipeline}，则可以使用不同的 {@link ChannelHandlerContext} 调用该实例。
+ * 应该添加到多个 {@link ChannelPipeline} 的 {@link ChannelHandler} 应标记为 {@link io.netty.channel.ChannelHandler.Ssharedable}。
  *
  * <h3>Additional resources worth reading</h3>
  * <p>
