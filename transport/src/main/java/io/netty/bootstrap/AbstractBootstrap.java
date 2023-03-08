@@ -309,6 +309,7 @@ public abstract class AbstractBootstrap<B extends AbstractBootstrap<B, C>, C ext
         Channel channel = null;
         try {
             // 泛型+反射+工厂创建出所需的 channel
+            // 在通用启动模板代码里，执行到 bind 时，才真正实例化 channel
             channel = channelFactory.newChannel();
             // 创建完 channel 后再单独初始化之
             init(channel);
