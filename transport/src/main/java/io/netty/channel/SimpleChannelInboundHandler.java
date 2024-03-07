@@ -93,16 +93,20 @@ public abstract class SimpleChannelInboundHandler<I> extends ChannelInboundHandl
     public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
         boolean release = true;
         try {
-            // 类型匹配
+            // 类型匹配 检查接收到的消息是否符合处理器的泛型类型
             if (acceptInboundMessage(msg)) {
                 @SuppressWarnings("unchecked")
                 I imsg = (I) msg;
+                // 如果是，则调用 channelRead0() 方法来处理消息
                 channelRead0(ctx, imsg);
             } else {
                 release = false;
+                // 否则，将消息传递给下一个处理器
                 ctx.fireChannelRead(msg);
             }
         } finally {
+            // 在处理完消息后
+            // 检查 autoRelease 属性是否为 true，以决定是否自动释放消息占用的资源
             if (autoRelease && release) {
                 // 因为可能是堆外内存或内存池,所以需要释放ByteBuf
                 ReferenceCountUtil.release(msg);

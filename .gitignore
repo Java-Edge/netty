@@ -46,3 +46,4 @@ mainframer
 # exclude vscode files
 .vscode/
 *.factorypath
+/example/src/main/resources/netty-in-action/

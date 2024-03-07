@@ -34,6 +34,7 @@ import static java.lang.Math.min;
 
 /**
  * Light-weight object pool based on a thread-local stack.
+ * 基于thread-local栈的轻量级对象池
  *
  * @param <T> the type of the pooled object
  */
