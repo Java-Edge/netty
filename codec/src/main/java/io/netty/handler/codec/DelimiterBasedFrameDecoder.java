@@ -169,7 +169,7 @@ public class DelimiterBasedFrameDecoder extends ByteToMessageDecoder {
             int maxFrameLength, boolean stripDelimiter, boolean failFast, ByteBuf... delimiters) {
         validateMaxFrameLength(maxFrameLength);
         ObjectUtil.checkNonEmpty(delimiters, "delimiters");
-
+        // 初始化位置
         if (isLineBased(delimiters) && !isSubclass()) {
             lineBasedDecoder = new LineBasedFrameDecoder(maxFrameLength, stripDelimiter, failFast);
             this.delimiters = null;
