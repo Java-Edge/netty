@@ -22,8 +22,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 
-import java.util.ArrayDeque;
-import java.util.Queue;
 import java.util.Random;
 
 import static io.netty.handler.codec.spdy.SpdyCodecUtil.SPDY_HEADER_SIZE;
@@ -33,14 +31,14 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyZeroInteractions;
+import static org.mockito.Mockito.verifyNoInteractions;
 
 public class SpdyFrameDecoderTest {
 
     private static final Random RANDOM = new Random();
 
-    private final SpdyFrameDecoderDelegate delegate = mock(SpdyFrameDecoderDelegate.class);
-    private final TestSpdyFrameDecoderDelegate testDelegate = new TestSpdyFrameDecoderDelegate();
+    private final SpdyFrameDecoderExtendedDelegate delegate = mock(SpdyFrameDecoderExtendedDelegate.class);
+    private final TestSpdyFrameDecoderDelegate testDelegate = new TestSpdyFrameDecoderDelegate(delegate);
     private SpdyFrameDecoder decoder;
 
     @BeforeEach
@@ -53,101 +51,14 @@ public class SpdyFrameDecoderTest {
         testDelegate.releaseAll();
     }
 
-    private final class TestSpdyFrameDecoderDelegate implements SpdyFrameDecoderDelegate {
-        private final Queue<ByteBuf> buffers = new ArrayDeque<ByteBuf>();
-
-        @Override
-        public void readDataFrame(int streamId, boolean last, ByteBuf data) {
-            delegate.readDataFrame(streamId, last, data);
-            buffers.add(data);
-        }
-
-        @Override
-        public void readSynStreamFrame(int streamId, int associatedToStreamId,
-        byte priority, boolean last, boolean unidirectional) {
-            delegate.readSynStreamFrame(streamId, associatedToStreamId, priority, last, unidirectional);
-        }
-
-        @Override
-        public void readSynReplyFrame(int streamId, boolean last) {
-            delegate.readSynReplyFrame(streamId, last);
-        }
-
-        @Override
-        public void readRstStreamFrame(int streamId, int statusCode) {
-            delegate.readRstStreamFrame(streamId, statusCode);
-        }
-
-        @Override
-        public void readSettingsFrame(boolean clearPersisted) {
-            delegate.readSettingsFrame(clearPersisted);
-        }
-
-        @Override
-        public void readSetting(int id, int value, boolean persistValue, boolean persisted) {
-            delegate.readSetting(id, value, persistValue, persisted);
-        }
-
-        @Override
-        public void readSettingsEnd() {
-            delegate.readSettingsEnd();
-        }
-
-        @Override
-        public void readPingFrame(int id) {
-            delegate.readPingFrame(id);
-        }
-
-        @Override
-        public void readGoAwayFrame(int lastGoodStreamId, int statusCode) {
-            delegate.readGoAwayFrame(lastGoodStreamId, statusCode);
-        }
-
-        @Override
-        public void readHeadersFrame(int streamId, boolean last) {
-            delegate.readHeadersFrame(streamId, last);
-        }
-
-        @Override
-        public void readWindowUpdateFrame(int streamId, int deltaWindowSize) {
-            delegate.readWindowUpdateFrame(streamId, deltaWindowSize);
-        }
-
-        @Override
-        public void readHeaderBlock(ByteBuf headerBlock) {
-            delegate.readHeaderBlock(headerBlock);
-            buffers.add(headerBlock);
-        }
-
-        @Override
-        public void readHeaderBlockEnd() {
-            delegate.readHeaderBlockEnd();
-        }
-
-        @Override
-        public void readFrameError(String message) {
-            delegate.readFrameError(message);
-        }
-
-        void releaseAll() {
-            for (;;) {
-                ByteBuf buf = buffers.poll();
-                if (buf == null) {
-                    return;
-                }
-                buf.release();
-            }
-        }
-    }
-
     private static void encodeDataFrameHeader(ByteBuf buffer, int streamId, byte flags, int length) {
         buffer.writeInt(streamId & 0x7FFFFFFF);
         buffer.writeByte(flags);
         buffer.writeMedium(length);
     }
 
-    private static void encodeControlFrameHeader(ByteBuf buffer, short type, byte flags, int length) {
-        buffer.writeShort(0x8000 | SpdyVersion.SPDY_3_1.getVersion());
+    static void encodeControlFrameHeader(ByteBuf buffer, short type, byte flags, int length) {
+        buffer.writeShort(0x8000 | SpdyVersion.SPDY_3_1.version());
         buffer.writeShort(type);
         buffer.writeByte(flags);
         buffer.writeMedium(length);
@@ -930,7 +841,7 @@ public class SpdyFrameDecoderTest {
         buf.writeLong(RANDOM.nextLong());
 
         decoder.decode(buf);
-        verifyZeroInteractions(delegate);
+        verifyNoInteractions(delegate);
         assertFalse(buf.isReadable());
         buf.release();
     }
@@ -945,7 +856,7 @@ public class SpdyFrameDecoderTest {
         encodeControlFrameHeader(buf, type, flags, length);
 
         decoder.decode(buf);
-        verifyZeroInteractions(delegate);
+        verifyNoInteractions(delegate);
         assertFalse(buf.isReadable());
         buf.release();
     }
@@ -967,7 +878,7 @@ public class SpdyFrameDecoderTest {
         decoder.decode(header);
         decoder.decode(segment1);
         decoder.decode(segment2);
-        verifyZeroInteractions(delegate);
+        verifyNoInteractions(delegate);
         assertFalse(header.isReadable());
         assertFalse(segment1.isReadable());
         assertFalse(segment2.isReadable());

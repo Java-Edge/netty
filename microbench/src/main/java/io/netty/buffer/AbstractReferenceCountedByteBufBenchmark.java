@@ -34,7 +34,14 @@ import java.util.concurrent.TimeUnit;
 @State(Scope.Benchmark)
 public class AbstractReferenceCountedByteBufBenchmark extends AbstractMicrobenchmark {
 
-    @Param({ "1", "10", "100", "1000", "10000" })
+    @Param({
+            "0",
+            "1",
+            "10",
+            "100",
+            "1000",
+            "10000",
+    })
     public int delay;
 
     AbstractReferenceCountedByteBuf buf;
@@ -54,8 +61,14 @@ public class AbstractReferenceCountedByteBufBenchmark extends AbstractMicrobench
     @OutputTimeUnit(TimeUnit.NANOSECONDS)
     public boolean retainReleaseUncontended() {
         buf.retain();
-        Blackhole.consumeCPU(delay);
+        delay();
         return buf.release();
+    }
+
+    private void delay() {
+        if (delay > 0) {
+            Blackhole.consumeCPU(delay);
+        }
     }
 
     @Benchmark
@@ -65,7 +78,7 @@ public class AbstractReferenceCountedByteBufBenchmark extends AbstractMicrobench
     public boolean createUseAndRelease(Blackhole useBuffer) {
         ByteBuf unpooled = Unpooled.buffer(1);
         useBuffer.consume(unpooled);
-        Blackhole.consumeCPU(delay);
+        delay();
         return unpooled.release();
     }
 
@@ -75,7 +88,7 @@ public class AbstractReferenceCountedByteBufBenchmark extends AbstractMicrobench
     @GroupThreads(4)
     public boolean retainReleaseContended() {
         buf.retain();
-        Blackhole.consumeCPU(delay);
+        delay();
         return buf.release();
     }
 }

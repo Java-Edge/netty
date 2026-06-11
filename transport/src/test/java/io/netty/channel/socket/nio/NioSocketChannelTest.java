@@ -35,6 +35,8 @@ import io.netty.channel.socket.SocketChannel;
 import io.netty.util.CharsetUtil;
 import io.netty.util.NetUtil;
 import io.netty.util.internal.PlatformDependent;
+import io.netty.util.concurrent.Promise;
+import io.netty.util.internal.ThrowableUtil;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -55,10 +57,11 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
-import static org.hamcrest.CoreMatchers.*;
-import static org.hamcrest.MatcherAssert.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
-
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 
 public class NioSocketChannelTest extends AbstractNioChannelTest<NioSocketChannel> {
@@ -104,17 +107,17 @@ public class NioSocketChannelTest extends AbstractNioChannelTest<NioSocketChanne
             }
             s.close();
 
-            assertThat(futures.size(), is(3));
+            assertEquals(3, futures.size());
             ChannelFuture f1 = futures.poll();
             ChannelFuture f2 = futures.poll();
             ChannelFuture f3 = futures.poll();
-            assertThat(f1.isSuccess(), is(true));
-            assertThat(f2.isDone(), is(true));
-            assertThat(f2.isSuccess(), is(false));
-            assertThat(f2.cause(), is(instanceOf(ClosedChannelException.class)));
-            assertThat(f3.isDone(), is(true));
-            assertThat(f3.isSuccess(), is(false));
-            assertThat(f3.cause(), is(instanceOf(ClosedChannelException.class)));
+            assertTrue(f1.isSuccess());
+            assertTrue(f2.isDone());
+            assertFalse(f2.isSuccess());
+            assertInstanceOf(ClosedChannelException.class, f2.cause());
+            assertTrue(f3.isDone());
+            assertFalse(f3.isSuccess());
+            assertInstanceOf(ClosedChannelException.class, f3.cause());
         } finally {
             group.shutdownGracefully().sync();
         }
@@ -154,7 +157,7 @@ public class NioSocketChannelTest extends AbstractNioChannelTest<NioSocketChanne
             byte[] buf = new byte[3];
             in.readFully(buf);
 
-            assertThat(new String(buf, CharsetUtil.US_ASCII), is("abc"));
+            assertEquals("abc", new String(buf, CharsetUtil.US_ASCII));
 
             s.close();
         } finally {
@@ -164,13 +167,13 @@ public class NioSocketChannelTest extends AbstractNioChannelTest<NioSocketChanne
 
     // Test for https://github.com/netty/netty/issues/4805
     @Test
-    @Timeout(value = 3000, unit = TimeUnit.MILLISECONDS)
+    @Timeout(30)
     public void testChannelReRegisterReadSameEventLoop() throws Exception {
         testChannelReRegisterRead(true);
     }
 
     @Test
-    @Timeout(value = 3000, unit = TimeUnit.MILLISECONDS)
+    @Timeout(30)
     public void testChannelReRegisterReadDifferentEventLoop() throws Exception {
         testChannelReRegisterRead(false);
     }
@@ -178,6 +181,7 @@ public class NioSocketChannelTest extends AbstractNioChannelTest<NioSocketChanne
     private static void testChannelReRegisterRead(final boolean sameEventLoop) throws Exception {
         final EventLoopGroup group = new NioEventLoopGroup(2);
         final CountDownLatch latch = new CountDownLatch(1);
+        final Promise<Void> eventLoopCheck = group.next().newPromise();
 
         // Just some random bytes
         byte[] bytes = new byte[1024];
@@ -224,8 +228,17 @@ public class NioSocketChannelTest extends AbstractNioChannelTest<NioSocketChanne
                                  @Override
                                  public void operationComplete(ChannelFuture cf) {
                                      Channel channel = cf.channel();
-                                     assertNotSame(loop, channel.eventLoop());
-                                     group.next().register(channel);
+                                     Throwable cause = cf.cause();
+                                     if (loop == channel.eventLoop()) {
+                                         AssertionError err = new AssertionError("Got same event loop: " + loop);
+                                         ThrowableUtil.addSuppressed(err, cause);
+                                         eventLoopCheck.tryFailure(err);
+                                     } else if (cause != null) {
+                                         eventLoopCheck.tryFailure(new AssertionError(cause));
+                                     } else {
+                                         eventLoopCheck.trySuccess(null);
+                                         group.next().register(channel);
+                                     }
                                  }
                              });
                          }
@@ -241,6 +254,7 @@ public class NioSocketChannelTest extends AbstractNioChannelTest<NioSocketChanne
             cc = bootstrap.connect(sc.localAddress()).syncUninterruptibly().channel();
             cc.writeAndFlush(Unpooled.wrappedBuffer(bytes)).syncUninterruptibly();
             latch.await();
+            eventLoopCheck.sync();
         } finally {
             if (cc != null) {
                 cc.close();
@@ -248,13 +262,13 @@ public class NioSocketChannelTest extends AbstractNioChannelTest<NioSocketChanne
             if (sc != null) {
                 sc.close();
             }
-            group.shutdownGracefully();
+            group.shutdownGracefully().sync();
         }
     }
 
     @Test
-    @Timeout(value = 3000, unit = TimeUnit.MILLISECONDS)
-    public void testShutdownOutputAndClose() throws IOException {
+    @Timeout(30)
+    public void testShutdownOutputAndClose() throws Exception {
         NioEventLoopGroup group = new NioEventLoopGroup(1);
         ServerSocket socket = new ServerSocket();
         socket.bind(new InetSocketAddress(0));
@@ -284,7 +298,7 @@ public class NioSocketChannelTest extends AbstractNioChannelTest<NioSocketChanne
             } catch (IOException ignore) {
                 // ignore
             }
-            group.shutdownGracefully();
+            group.shutdownGracefully().sync();
         }
     }
 

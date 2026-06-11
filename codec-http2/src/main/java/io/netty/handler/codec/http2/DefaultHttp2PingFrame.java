@@ -17,12 +17,10 @@
 package io.netty.handler.codec.http2;
 
 import io.netty.util.internal.StringUtil;
-import io.netty.util.internal.UnstableApi;
 
 /**
  * The default {@link Http2PingFrame} implementation.
  */
-@UnstableApi
 public class DefaultHttp2PingFrame implements Http2PingFrame {
 
     private final long content;
@@ -63,7 +61,8 @@ public class DefaultHttp2PingFrame implements Http2PingFrame {
 
     @Override
     public int hashCode() {
-        int hash = super.hashCode();
+        // Must be consistent with equals; super.hashCode() is Object's identity hash.
+        int hash = (int) (content ^ content >>> 32);
         hash = hash * 31 + (ack ? 1 : 0);
         return hash;
     }

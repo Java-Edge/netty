@@ -35,7 +35,7 @@ import io.netty.handler.codec.http.HttpUtil;
 import io.netty.handler.codec.http.HttpVersion;
 import io.netty.util.AsciiString;
 import io.netty.util.internal.InternalThreadLocalMap;
-import io.netty.util.internal.UnstableApi;
+import io.netty.util.internal.StringUtil;
 
 import java.net.URI;
 import java.util.Iterator;
@@ -62,14 +62,15 @@ import static io.netty.util.ByteProcessor.FIND_COMMA;
 import static io.netty.util.ByteProcessor.FIND_SEMI_COLON;
 import static io.netty.util.internal.ObjectUtil.checkNotNull;
 import static io.netty.util.internal.StringUtil.isNullOrEmpty;
-import static io.netty.util.internal.StringUtil.length;
 import static io.netty.util.internal.StringUtil.unescapeCsvFields;
 
 /**
  * Provides utility methods and constants for the HTTP/2 to HTTP conversion
  */
-@UnstableApi
 public final class HttpConversionUtil {
+    // Parsing logic adapted from Vert.x HttpUtils.parsePath/parseQuery:
+    // https://github.com/eclipse-vertx/vert.x/blob/98a8ef6c8b408009ff86eb8277fd0bbb2b866857/
+    // vertx-core/src/main/java/io/vertx/core/http/impl/HttpUtils.java#L279-L319
     /**
      * The set of headers that should not be directly copied when converting headers from HTTP to HTTP/2.
      */
@@ -440,11 +441,21 @@ public final class HttpConversionUtil {
                 out.path(new AsciiString(request.uri()));
                 setHttp2Scheme(inHeaders, out);
             } else {
-                URI requestTargetUri = URI.create(request.uri());
-                out.path(toHttp2Path(requestTargetUri));
-                // Take from the request-line if HOST header was empty
-                host = isNullOrEmpty(host) ? requestTargetUri.getAuthority() : host;
-                setHttp2Scheme(inHeaders, requestTargetUri, out);
+                String requestTarget = request.uri();
+                out.path(toHttp2Path(requestTarget));
+                if (hasSchemeAndAuthority(requestTarget)) {
+                    URI requestTargetUri = URI.create(http2PathlessRequestTarget(requestTarget));
+                    // Take from the request-line if HOST header was empty
+                    host = isNullOrEmpty(host) ? requestTargetUri.getAuthority() : host;
+                    setHttp2Scheme(inHeaders, requestTargetUri, out);
+                } else {
+                    int schemeEnd = schemeEnd(requestTarget);
+                    if (schemeEnd != -1) {
+                        setHttp2Scheme(inHeaders, requestTarget.substring(0, schemeEnd), -1, out);
+                    } else {
+                        setHttp2Scheme(inHeaders, out);
+                    }
+                }
             }
             setHttp2Authority(host, out);
             out.method(request.method().asciiName());
@@ -534,30 +545,29 @@ public final class HttpConversionUtil {
                 if (aName.contentEqualsIgnoreCase(TE)) {
                     toHttp2HeadersFilterTE(entry, out);
                 } else if (aName.contentEqualsIgnoreCase(COOKIE)) {
-                    AsciiString value = AsciiString.of(entry.getValue());
-                    // split up cookies to allow for better compression
-                    // https://tools.ietf.org/html/rfc7540#section-8.1.2.5
-                    try {
-                        int index = value.forEachByte(FIND_SEMI_COLON);
-                        if (index != -1) {
-                            int start = 0;
-                            do {
-                                out.add(COOKIE, value.subSequence(start, index, false));
-                                // skip 2 characters "; " (see https://tools.ietf.org/html/rfc6265#section-4.2.1)
-                                start = index + 2;
-                            } while (start < value.length() &&
-                                    (index = value.forEachByte(start, value.length() - start, FIND_SEMI_COLON)) != -1);
-                            if (start >= value.length()) {
-                                throw new IllegalArgumentException("cookie value is of unexpected format: " + value);
+                    CharSequence valueCs = entry.getValue();
+                    // validate
+                    boolean invalid = false;
+                    for (int i = 0; i < valueCs.length(); i++) {
+                        char c = valueCs.charAt(i);
+                        if (c == ';') {
+                            if (i + 1 >= valueCs.length() || valueCs.charAt(i + 1) != ' ') {
+                                // semicolon not followed by space. invalid, don't split
+                                invalid = true;
+                                break;
                             }
-                            out.add(COOKIE, value.subSequence(start, value.length(), false));
-                        } else {
-                            out.add(COOKIE, value);
+                            i++; // skip space
+                        } else if (c > 255) {
+                            // not ascii, don't split
+                            invalid = true;
+                            break;
                         }
-                    } catch (Exception e) {
-                        // This is not expect to happen because FIND_SEMI_COLON never throws but must be caught
-                        // because of the ByteProcessor interface.
-                        throw new IllegalStateException(e);
+                    }
+
+                    if (invalid) {
+                        out.add(COOKIE, valueCs);
+                    } else {
+                        splitValidCookieHeader(out, valueCs);
                     }
                 } else {
                     out.add(aName, entry.getValue());
@@ -566,26 +576,172 @@ public final class HttpConversionUtil {
         }
     }
 
+    private static void splitValidCookieHeader(Http2Headers out, CharSequence valueCs) {
+        try {
+            AsciiString value = AsciiString.of(valueCs);
+            // split up cookies to allow for better compression
+            // https://tools.ietf.org/html/rfc7540#section-8.1.2.5
+            int index = value.forEachByte(FIND_SEMI_COLON);
+            if (index != -1) {
+                int start = 0;
+                do {
+                    out.add(COOKIE, value.subSequence(start, index, false));
+                    assert index + 1 < value.length();
+                    assert value.charAt(index + 1) == ' ';
+                    // skip 2 characters "; " (see https://tools.ietf.org/html/rfc6265#section-4.2.1)
+                    start = index + 2;
+                } while (start < value.length() &&
+                        (index = value.forEachByte(start, value.length() - start, FIND_SEMI_COLON)) != -1);
+                assert start < value.length();
+                out.add(COOKIE, value.subSequence(start, value.length(), false));
+            } else {
+                out.add(COOKIE, value);
+            }
+        } catch (Exception e) {
+            // This is not expect to happen because FIND_SEMI_COLON never throws but must be caught
+            // because of the ByteProcessor interface.
+            throw new IllegalStateException(e);
+        }
+    }
+
     /**
-     * Generate an HTTP/2 {code :path} from a URI in accordance with
+     * Generate an HTTP/2 {code :path} from a request-target in accordance with
      * <a href="https://tools.ietf.org/html/rfc7230#section-5.3">rfc7230, 5.3</a>.
      */
-    private static AsciiString toHttp2Path(URI uri) {
-        StringBuilder pathBuilder = new StringBuilder(length(uri.getRawPath()) +
-                length(uri.getRawQuery()) + length(uri.getRawFragment()) + 2);
-        if (!isNullOrEmpty(uri.getRawPath())) {
-            pathBuilder.append(uri.getRawPath());
+    private static AsciiString toHttp2Path(String uri) {
+        String path = dropEmptyFragment(parsePath(uri));
+        String query = parseQuery(uri);
+        if (isNullOrEmpty(query)) {
+            return path.isEmpty() ? EMPTY_REQUEST_PATH : new AsciiString(path);
         }
-        if (!isNullOrEmpty(uri.getRawQuery())) {
-            pathBuilder.append('?');
-            pathBuilder.append(uri.getRawQuery());
+        StringBuilder pathBuilder = new StringBuilder(path.length() + query.length() + 1);
+        pathBuilder.append(path);
+        appendQuery(pathBuilder, query);
+        return new AsciiString(pathBuilder.toString());
+    }
+
+    /**
+     * Extract the path out of the request-target. Based on Vert.x' HttpUtils.parsePath logic.
+     */
+    private static String parsePath(String uri) {
+        if (uri.isEmpty()) {
+            return StringUtil.EMPTY_STRING;
         }
-        if (!isNullOrEmpty(uri.getRawFragment())) {
-            pathBuilder.append('#');
-            pathBuilder.append(uri.getRawFragment());
+        int i;
+        if (uri.charAt(0) == '/') {
+            i = 0;
+        } else {
+            i = uri.indexOf("://");
+            // Netty change: validate the scheme before treating :// as authority syntax.
+            if (!isValidScheme(uri, i)) {
+                i = 0;
+            } else {
+                int authorityStart = i + 3;
+                // Netty change: only accept '/' before query/fragment as path start.
+                int queryOrFragmentStart = queryOrFragmentStart(uri, authorityStart);
+                i = uri.indexOf('/', authorityStart);
+                if (i == -1 || (queryOrFragmentStart != -1 && queryOrFragmentStart < i)) {
+                    // contains no /
+                    return "/";
+                }
+            }
         }
-        String path = pathBuilder.toString();
-        return path.isEmpty() ? EMPTY_REQUEST_PATH : new AsciiString(path);
+
+        int queryStart = uri.indexOf('?', i);
+        if (queryStart == -1) {
+            queryStart = uri.length();
+            if (i == 0) {
+                return uri;
+            }
+        }
+        return uri.substring(i, queryStart);
+    }
+
+    /**
+     * Extract the query out of a request-target or returns {@code null} if no query was found.
+     */
+    private static String parseQuery(String uri) {
+        int i = uri.indexOf('?');
+        if (i == -1) {
+            return null;
+        } else {
+            return uri.substring(i + 1);
+        }
+    }
+
+    private static String dropEmptyFragment(String path) {
+        // Netty change: old URI-based conversion dropped an empty fragment delimiter.
+        return path.endsWith("#") ? path.substring(0, path.length() - 1) : path;
+    }
+
+    private static void appendQuery(StringBuilder pathBuilder, String query) {
+        int fragmentStart = query.indexOf('#');
+        if (fragmentStart == 0) {
+            // Netty change: old URI-based conversion skipped an empty query before a fragment.
+            pathBuilder.append(query);
+        } else if (fragmentStart == query.length() - 1) {
+            // Netty change: old URI-based conversion dropped an empty fragment delimiter after a query.
+            pathBuilder.append('?').append(query, 0, fragmentStart);
+        } else {
+            pathBuilder.append('?').append(query);
+        }
+    }
+
+    static int queryOrFragmentStart(String uri, int searchStart) {
+        int queryStart = uri.indexOf('?', searchStart);
+        int fragmentStart = uri.indexOf('#', searchStart);
+        return queryStart == -1 ? fragmentStart :
+                fragmentStart == -1 ? queryStart : Math.min(queryStart, fragmentStart);
+    }
+
+    // Netty addition: detect authority for HTTP/2 :scheme/:authority extraction.
+    static boolean hasSchemeAndAuthority(String requestTarget) {
+        int schemeEnd = requestTarget.indexOf("://");
+        return isValidScheme(requestTarget, schemeEnd);
+    }
+
+    private static int schemeEnd(String requestTarget) {
+        int schemeEnd = requestTarget.indexOf(':');
+        return isValidScheme(requestTarget, schemeEnd) ? schemeEnd : -1;
+    }
+
+    // Netty addition: prepare only scheme://authority for URI validation.
+    private static String http2PathlessRequestTarget(String requestTarget) {
+        int schemeEnd = requestTarget.indexOf("://");
+        int authorityStart = schemeEnd + 3;
+        // Netty addition: strip before path/query/fragment; Vert.x parsePath does not validate authority.
+        int pathStart = requestTarget.indexOf('/', authorityStart);
+        int delimiter = queryOrFragmentStart(requestTarget, authorityStart);
+        if (pathStart != -1 && (delimiter == -1 || pathStart < delimiter)) {
+            delimiter = pathStart;
+        }
+        if (delimiter == -1) {
+            return requestTarget;
+        }
+        return delimiter == authorityStart ? requestTarget.substring(0, delimiter + 1) :
+                requestTarget.substring(0, delimiter);
+    }
+
+    // Netty addition: validate the text before :// as a scheme.
+    static boolean isValidScheme(String uri, int schemeEnd) {
+        if (schemeEnd <= 0) {
+            return false;
+        }
+        char first = uri.charAt(0);
+        if (!isAlpha(first)) {
+            return false;
+        }
+        for (int i = 1; i < schemeEnd; ++i) {
+            char c = uri.charAt(i);
+            if (!isAlpha(c) && (c < '0' || c > '9') && c != '+' && c != '-' && c != '.') {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean isAlpha(char c) {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
     }
 
     // package-private for testing only
@@ -610,9 +766,12 @@ public final class HttpConversionUtil {
     }
 
     private static void setHttp2Scheme(HttpHeaders in, URI uri, Http2Headers out) {
-        String value = uri.getScheme();
-        if (!isNullOrEmpty(value)) {
-            out.scheme(new AsciiString(value));
+        setHttp2Scheme(in, uri.getScheme(), uri.getPort(), out);
+    }
+
+    private static void setHttp2Scheme(HttpHeaders in, String scheme, int port, Http2Headers out) {
+        if (!isNullOrEmpty(scheme)) {
+            out.scheme(new AsciiString(scheme));
             return;
         }
 
@@ -623,9 +782,9 @@ public final class HttpConversionUtil {
             return;
         }
 
-        if (uri.getPort() == HTTPS.port()) {
+        if (port == HTTPS.port()) {
             out.scheme(HTTPS.name());
-        } else if (uri.getPort() == HTTP.port()) {
+        } else if (port == HTTP.port()) {
             out.scheme(HTTP.name());
         } else {
             throw new IllegalArgumentException(":scheme must be specified. " +

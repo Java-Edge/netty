@@ -28,7 +28,6 @@ import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.Promise;
 import io.netty.util.internal.ObjectUtil;
 import io.netty.util.internal.StringUtil;
-import io.netty.util.internal.UnstableApi;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 
@@ -37,7 +36,6 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
-@UnstableApi
 public final class Http2StreamChannelBootstrap {
     private static final InternalLogger logger = InternalLoggerFactory.getInstance(Http2StreamChannelBootstrap.class);
     @SuppressWarnings("unchecked")
@@ -237,11 +235,10 @@ public final class Http2StreamChannelBootstrap {
             @SuppressWarnings("unchecked")
             ChannelOption<Object> opt = (ChannelOption<Object>) option;
             if (!channel.config().setOption(opt, value)) {
-                logger.warn("Unknown channel option '{}' for channel '{}'", option, channel);
+                logger.warn("{} Unknown channel option '{}'", channel, option);
             }
         } catch (Throwable t) {
-            logger.warn(
-                    "Failed to set channel option '{}' with value '{}' for channel '{}'", option, value, channel, t);
+            logger.warn("{} Failed to set channel option '{}' with value '{}'", channel, option, value, t);
         }
     }
 

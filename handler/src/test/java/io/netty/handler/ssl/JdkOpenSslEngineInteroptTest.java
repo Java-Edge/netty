@@ -17,6 +17,7 @@ package io.netty.handler.ssl;
 
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.condition.EnabledIf;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 
@@ -40,8 +41,7 @@ public class JdkOpenSslEngineInteroptTest extends SSLEngineTest {
         List<SSLEngineTestParam> params = super.newTestParams();
         List<SSLEngineTestParam> testParams = new ArrayList<SSLEngineTestParam>();
         for (SSLEngineTestParam param: params) {
-            testParams.add(new OpenSslEngineTestParam(true, param));
-            testParams.add(new OpenSslEngineTestParam(false, param));
+            OpenSslEngineTestParam.expandCombinations(param, testParams);
         }
         return testParams;
     }
@@ -237,19 +237,33 @@ public class JdkOpenSslEngineInteroptTest extends SSLEngineTest {
         super.testRSASSAPSS(param);
     }
 
+    private static boolean isWrappingTrustManagerSupported() {
+        return OpenSslX509TrustManagerWrapper.isWrappingSupported();
+    }
+
+    @MethodSource("newTestParams")
+    @ParameterizedTest
+    @EnabledIf("isWrappingTrustManagerSupported")
+    @Override
+    public void testUsingX509TrustManagerVerifiesHostname(SSLEngineTestParam param) throws Exception {
+        super.testUsingX509TrustManagerVerifiesHostname(param);
+    }
+
+    @MethodSource("newTestParams")
+    @ParameterizedTest
+    @EnabledIf("isWrappingTrustManagerSupported")
+    @Override
+    public void testUsingX509TrustManagerVerifiesSNIHostname(SSLEngineTestParam param) throws Exception {
+        super.testUsingX509TrustManagerVerifiesSNIHostname(param);
+    }
+
     @Override
     protected SSLEngine wrapEngine(SSLEngine engine) {
         return Java8SslTestUtils.wrapSSLEngineForTesting(engine);
     }
 
-    @SuppressWarnings("deprecation")
     @Override
     protected SslContext wrapContext(SSLEngineTestParam param, SslContext context) {
-        if (context instanceof OpenSslContext && param instanceof OpenSslEngineTestParam) {
-            ((OpenSslContext) context).setUseTasks(((OpenSslEngineTestParam) param).useTasks);
-            // Explicit enable the session cache as its disabled by default on the client side.
-            ((OpenSslContext) context).sessionContext().setSessionCacheEnabled(true);
-        }
-        return context;
+        return OpenSslEngineTestParam.wrapContext(param, context);
     }
 }

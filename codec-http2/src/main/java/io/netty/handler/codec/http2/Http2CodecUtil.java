@@ -25,7 +25,6 @@ import io.netty.channel.DefaultChannelPromise;
 import io.netty.handler.ssl.ApplicationProtocolNames;
 import io.netty.util.AsciiString;
 import io.netty.util.concurrent.EventExecutor;
-import io.netty.util.internal.UnstableApi;
 
 import static io.netty.buffer.Unpooled.directBuffer;
 import static io.netty.buffer.Unpooled.unreleasableBuffer;
@@ -41,7 +40,6 @@ import static java.util.concurrent.TimeUnit.SECONDS;
 /**
  * Constants and utility method used for encoding/decoding HTTP2 frames.
  */
-@UnstableApi
 public final class Http2CodecUtil {
     public static final int CONNECTION_STREAM_ID = 0;
     public static final int HTTP_UPGRADE_STREAM_ID = 1;
@@ -78,7 +76,7 @@ public final class Http2CodecUtil {
             FRAME_HEADER_LENGTH + MAX_PADDING_LENGTH_LENGTH + INT_FIELD_LENGTH;
     public static final int GO_AWAY_FRAME_HEADER_LENGTH = FRAME_HEADER_LENGTH + 2 * INT_FIELD_LENGTH;
     public static final int WINDOW_UPDATE_FRAME_LENGTH = FRAME_HEADER_LENGTH + INT_FIELD_LENGTH;
-    public static final int CONTINUATION_FRAME_HEADER_LENGTH = FRAME_HEADER_LENGTH + MAX_PADDING_LENGTH_LENGTH;
+    public static final int CONTINUATION_FRAME_HEADER_LENGTH = FRAME_HEADER_LENGTH;
 
     public static final char SETTINGS_HEADER_TABLE_SIZE = 1;
     public static final char SETTINGS_ENABLE_PUSH = 2;
@@ -86,7 +84,8 @@ public final class Http2CodecUtil {
     public static final char SETTINGS_INITIAL_WINDOW_SIZE = 4;
     public static final char SETTINGS_MAX_FRAME_SIZE = 5;
     public static final char SETTINGS_MAX_HEADER_LIST_SIZE = 6;
-    public static final int NUM_STANDARD_SETTINGS = 6;
+    public static final char SETTINGS_ENABLE_CONNECT_PROTOCOL = 8;
+    public static final int NUM_STANDARD_SETTINGS = 7;
 
     public static final long MAX_HEADER_TABLE_SIZE = MAX_UNSIGNED_INT;
     public static final long MAX_CONCURRENT_STREAMS = MAX_UNSIGNED_INT;
@@ -112,11 +111,19 @@ public final class Http2CodecUtil {
     public static final int DEFAULT_MAX_FRAME_SIZE = MAX_FRAME_SIZE_LOWER_BOUND;
     /**
      * The assumed minimum value for {@code SETTINGS_MAX_CONCURRENT_STREAMS} as
-     * recommended by the <a herf="https://tools.ietf.org/html/rfc7540#section-6.5.2">HTTP/2 spec</a>.
+     * recommended by the <a href="https://tools.ietf.org/html/rfc7540#section-6.5.2">HTTP/2 spec</a>.
      */
     public static final int SMALLEST_MAX_CONCURRENT_STREAMS = 100;
     static final int DEFAULT_MAX_RESERVED_STREAMS = SMALLEST_MAX_CONCURRENT_STREAMS;
     static final int DEFAULT_MIN_ALLOCATION_CHUNK = 1024;
+    static final int DEFAULT_MAX_SMALL_CONTINUATION_FRAME = 16;
+
+    /**
+     * While the RFC only specified a minimum we should still pick a default which is good enough that most people
+     * no need to adjust it but still be somewhat protected. Let's use the minimum
+     * defined by the <a href="https://tools.ietf.org/html/rfc7540#section-6.5.2">HTTP/2 spec</a>.
+     */
+    static final int DEFAULT_MAX_CONCURRENT_STREAMS = SMALLEST_MAX_CONCURRENT_STREAMS;
 
     /**
      * Calculate the threshold in bytes which should trigger a {@code GO_AWAY} if a set of headers exceeds this amount.

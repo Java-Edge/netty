@@ -15,15 +15,19 @@
  */
 package io.netty.buffer;
 
+import io.netty.util.AsciiString;
 import io.netty.util.ByteProcessor;
 import io.netty.util.CharsetUtil;
 import io.netty.util.IllegalReferenceCountException;
 import io.netty.util.internal.PlatformDependent;
+import io.netty.util.internal.ThrowableUtil;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.function.Executable;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -46,8 +50,15 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Random;
 import java.util.Set;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -59,12 +70,11 @@ import static io.netty.buffer.Unpooled.directBuffer;
 import static io.netty.buffer.Unpooled.unreleasableBuffer;
 import static io.netty.buffer.Unpooled.wrappedBuffer;
 import static io.netty.util.internal.EmptyArrays.EMPTY_BYTES;
-import static org.hamcrest.CoreMatchers.is;
-import static org.hamcrest.MatcherAssert.assertThat;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -105,8 +115,8 @@ public abstract class AbstractByteBufTest {
     @AfterEach
     public void dispose() {
         if (buffer != null) {
-            assertThat(buffer.release(), is(true));
-            assertThat(buffer.refCnt(), is(0));
+            assertTrue(buffer.release());
+            assertEquals(0, buffer.refCnt());
 
             try {
                 buffer.release();
@@ -2137,6 +2147,52 @@ public abstract class AbstractByteBufTest {
     }
 
     @Test
+    public void testDuplicateOfSliceHasTheSameCapacityAsTheSlice() {
+        ByteBuf slice = buffer.slice();
+        ByteBuf duplicate = slice.duplicate();
+        assertEquals(slice.capacity(), duplicate.capacity());
+
+        slice = buffer.slice(0, buffer.capacity() - 2);
+        duplicate = slice.duplicate();
+        assertEquals(slice.capacity(), duplicate.capacity());
+
+        slice = buffer.slice();
+        duplicate = slice.retainedDuplicate();
+        assertEquals(slice.capacity(), duplicate.capacity());
+        duplicate.release();
+
+        slice = buffer.slice(0, buffer.capacity() - 2);
+        duplicate = slice.retainedDuplicate();
+        assertEquals(slice.capacity(), duplicate.capacity());
+        duplicate.release();
+    }
+
+    @Test
+    public void testDuplicateOfRetainedSliceHasTheSameCapacityAsTheSlice() {
+        ByteBuf slice = buffer.retainedSlice();
+        ByteBuf duplicate = slice.duplicate();
+        assertEquals(slice.capacity(), duplicate.capacity());
+        slice.release();
+
+        slice = buffer.retainedSlice(0, buffer.capacity() - 2);
+        duplicate = slice.duplicate();
+        assertEquals(slice.capacity(), duplicate.capacity());
+        slice.release();
+
+        slice = buffer.retainedSlice();
+        duplicate = slice.retainedDuplicate();
+        assertEquals(slice.capacity(), duplicate.capacity());
+        slice.release();
+        duplicate.release();
+
+        slice = buffer.retainedSlice(0, buffer.capacity() - 2);
+        duplicate = slice.retainedDuplicate();
+        assertEquals(slice.capacity(), duplicate.capacity());
+        slice.release();
+        duplicate.release();
+    }
+
+    @Test
     @SuppressWarnings("ObjectEqualsNull")
     public void testEquals() {
         assertFalse(buffer.equals(null));
@@ -2234,12 +2290,17 @@ public abstract class AbstractByteBufTest {
     }
 
     @Test
-    @Timeout(value = 10000, unit = TimeUnit.MILLISECONDS)
+    @Timeout(30)
     public void testToStringMultipleThreads() throws Throwable {
         buffer.clear();
         buffer.writeBytes("Hello, World!".getBytes(CharsetUtil.ISO_8859_1));
+        testToStringMultipleThreads0(buffer);
+    }
 
-        final AtomicInteger counter = new AtomicInteger(30000);
+    static void testToStringMultipleThreads0(final ByteBuf buffer) throws Throwable {
+        final String expected = buffer.toString(CharsetUtil.ISO_8859_1);
+
+        final CyclicBarrier startBarrier = new CyclicBarrier(10);
         final AtomicReference<Throwable> errorRef = new AtomicReference<Throwable>();
         List<Thread> threads = new ArrayList<Thread>();
         for (int i = 0; i < 10; i++) {
@@ -2247,11 +2308,15 @@ public abstract class AbstractByteBufTest {
                 @Override
                 public void run() {
                     try {
-                        while (errorRef.get() == null && counter.decrementAndGet() > 0) {
-                            assertEquals("Hello, World!", buffer.toString(CharsetUtil.ISO_8859_1));
+                        startBarrier.await(10, TimeUnit.SECONDS);
+                        int counter = 3000;
+                        while (errorRef.get() == null && counter-- > 0) {
+                            assertEquals(expected, buffer.toString(CharsetUtil.ISO_8859_1));
                         }
                     } catch (Throwable cause) {
-                        errorRef.compareAndSet(null, cause);
+                        if (!errorRef.compareAndSet(null, cause)) {
+                            ThrowableUtil.addSuppressed(errorRef.get(), cause);
+                        }
                     }
                 }
             });
@@ -2261,13 +2326,75 @@ public abstract class AbstractByteBufTest {
             thread.start();
         }
 
-        for (Thread thread : threads) {
-            thread.join();
-        }
+        joinAllAndReportErrors(threads, errorRef);
+    }
 
-        Throwable error = errorRef.get();
-        if (error != null) {
-            throw error;
+    private static void joinAllAndReportErrors(List<Thread> threads, AtomicReference<Throwable> errorRef)
+            throws Throwable {
+        try {
+            for (Thread thread : threads) {
+                thread.join();
+            }
+
+            Throwable error = errorRef.get();
+            if (error != null) {
+                throw error;
+            }
+        } catch (Throwable e) {
+            for (Thread thread : threads) {
+                if (thread.isAlive()) {
+                    ThrowableUtil.interruptAndAttachAsyncStackTrace(thread, e);
+                }
+            }
+            throw e;
+        }
+    }
+
+    @Test
+    @Timeout(value = 10000, unit = TimeUnit.MILLISECONDS)
+    public void testCopyMultipleThreads0() throws Throwable {
+        byte[] bytes = new byte[8];
+        random.nextBytes(bytes);
+        buffer.clear();
+        buffer.writeBytes(bytes);
+        testCopyMultipleThreads0(buffer);
+    }
+
+    static void testCopyMultipleThreads0(final ByteBuf buffer) throws Throwable {
+        final ByteBuf expected = buffer.copy();
+        try {
+            final CyclicBarrier startBarrier = new CyclicBarrier(10);
+            final AtomicReference<Throwable> errorRef = new AtomicReference<Throwable>();
+            List<Thread> threads = new ArrayList<Thread>();
+            for (int i = 0; i < 10; i++) {
+                Thread thread = new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            startBarrier.await(10, TimeUnit.SECONDS);
+                            int counter = 3000;
+                            while (errorRef.get() == null && counter-- > 0) {
+                                ByteBuf copy = buffer.copy();
+                                try {
+                                    assertEquals(expected, copy);
+                                } finally {
+                                    copy.release();
+                                }
+                            }
+                        } catch (Throwable cause) {
+                            errorRef.compareAndSet(null, cause);
+                        }
+                    }
+                });
+                threads.add(thread);
+            }
+            for (Thread thread : threads) {
+                thread.start();
+            }
+
+            joinAllAndReportErrors(threads, errorRef);
+        } finally {
+            expected.release();
         }
     }
 
@@ -2293,11 +2420,51 @@ public abstract class AbstractByteBufTest {
         buffer.writeByte((byte) 2);
         buffer.writeByte((byte) 3);
         buffer.writeByte((byte) 4);
-        buffer.writeByte((byte) 1);
+        buffer.writeByte((byte) 1); // 15
         assertEquals(11, buffer.indexOf(0, 12, (byte) 1));
         assertEquals(12, buffer.indexOf(0, 16, (byte) 2));
         assertEquals(-1, buffer.indexOf(0, 11, (byte) 1));
         assertEquals(11, buffer.indexOf(0, 16, (byte) 1));
+
+        // lastIndexOf
+        assertEquals(15, buffer.indexOf(16, 0, (byte) 1));
+        assertEquals(12, buffer.indexOf(16, 0, (byte) 2));
+        assertEquals(11, buffer.indexOf(15, 0, (byte) 1));
+        assertEquals(-1, buffer.indexOf(11, 0, (byte) 1));
+        buffer.release();
+    }
+
+    @Test
+    public void testUnrolledSWARIndexOf() {
+        ByteBuf buffer = newBuffer(15);
+        buffer.clear();
+        // Ensure the buffer is completely zero'ed.
+        buffer.setZero(0, buffer.capacity());
+        buffer.writeByte((byte) 0); // 0
+        buffer.writeByte((byte) 1);
+        buffer.writeByte((byte) 2);
+        buffer.writeByte((byte) 3);
+        buffer.writeByte((byte) 4);
+        buffer.writeByte((byte) 5);
+        buffer.writeByte((byte) 6);
+        buffer.writeByte((byte) 7); // 7
+
+        buffer.writeByte((byte) 8); // 8
+        buffer.writeByte((byte) 9);
+        buffer.writeByte((byte) 10);
+        buffer.writeByte((byte) 11);
+        buffer.writeByte((byte) 12);
+        buffer.writeByte((byte) 13);
+        buffer.writeByte((byte) 14); // 14
+        assertEquals(15, buffer.capacity());
+        for (int i = 0; i < 14; ++i) {
+            assertEquals(i, buffer.indexOf(i, buffer.capacity(), (byte) i));
+        }
+
+        // lastIndexOf
+        for (int i = 0; i < 14; ++i) {
+            assertEquals(i, buffer.indexOf(buffer.capacity(), 0, (byte) i));
+        }
         buffer.release();
     }
 
@@ -2467,19 +2634,19 @@ public abstract class AbstractByteBufTest {
 
         final AtomicInteger lastIndex = new AtomicInteger();
         buffer.setIndex(CAPACITY / 4, CAPACITY * 3 / 4);
-        assertThat(buffer.forEachByte(new ByteProcessor() {
+        assertEquals(-1, buffer.forEachByte(new ByteProcessor() {
             int i = CAPACITY / 4;
 
             @Override
             public boolean process(byte value) throws Exception {
-                assertThat(value, is((byte) (i + 1)));
+                assertEquals((byte) (i + 1), value);
                 lastIndex.set(i);
                 i ++;
                 return true;
             }
-        }), is(-1));
+        }));
 
-        assertThat(lastIndex.get(), is(CAPACITY * 3 / 4 - 1));
+        assertEquals(CAPACITY * 3 / 4 - 1, lastIndex.get());
     }
 
     @Test
@@ -2490,12 +2657,12 @@ public abstract class AbstractByteBufTest {
         }
 
         final int stop = CAPACITY / 2;
-        assertThat(buffer.forEachByte(CAPACITY / 3, CAPACITY / 3, new ByteProcessor() {
+        assertEquals(stop, buffer.forEachByte(CAPACITY / 3, CAPACITY / 3, new ByteProcessor() {
             int i = CAPACITY / 3;
 
             @Override
             public boolean process(byte value) throws Exception {
-                assertThat(value, is((byte) (i + 1)));
+                assertEquals((byte) (i + 1), value);
                 if (i == stop) {
                     return false;
                 }
@@ -2503,7 +2670,7 @@ public abstract class AbstractByteBufTest {
                 i++;
                 return true;
             }
-        }), is(stop));
+        }));
     }
 
     @Test
@@ -2514,19 +2681,19 @@ public abstract class AbstractByteBufTest {
         }
 
         final AtomicInteger lastIndex = new AtomicInteger();
-        assertThat(buffer.forEachByteDesc(CAPACITY / 4, CAPACITY * 2 / 4, new ByteProcessor() {
+        assertEquals(-1, buffer.forEachByteDesc(CAPACITY / 4, CAPACITY * 2 / 4, new ByteProcessor() {
             int i = CAPACITY * 3 / 4 - 1;
 
             @Override
             public boolean process(byte value) throws Exception {
-                assertThat(value, is((byte) (i + 1)));
+                assertEquals((byte) (i + 1), value);
                 lastIndex.set(i);
                 i --;
                 return true;
             }
-        }), is(-1));
+        }));
 
-        assertThat(lastIndex.get(), is(CAPACITY / 4));
+        assertEquals(CAPACITY / 4, lastIndex.get());
     }
 
     @Test
@@ -2559,139 +2726,212 @@ public abstract class AbstractByteBufTest {
     }
 
     @Test
+    @Timeout(30)
     public void testDuplicateReadGatheringByteChannelMultipleThreads() throws Exception {
-        testReadGatheringByteChannelMultipleThreads(false);
+        final byte[] bytes = new byte[8];
+        random.nextBytes(bytes);
+
+        final ByteBuf buffer = newBuffer(8);
+        buffer.writeBytes(bytes);
+        try {
+            testReadGatheringByteChannelMultipleThreads(buffer, bytes, false);
+        } finally {
+            buffer.release();
+        }
     }
 
     @Test
+    @Timeout(30)
     public void testSliceReadGatheringByteChannelMultipleThreads() throws Exception {
-        testReadGatheringByteChannelMultipleThreads(true);
-    }
-
-    private void testReadGatheringByteChannelMultipleThreads(final boolean slice) throws Exception {
         final byte[] bytes = new byte[8];
         random.nextBytes(bytes);
 
         final ByteBuf buffer = newBuffer(8);
         buffer.writeBytes(bytes);
+        try {
+            testReadGatheringByteChannelMultipleThreads(buffer, bytes, true);
+        } finally {
+            buffer.release();
+        }
+    }
+
+    static void testReadGatheringByteChannelMultipleThreads(
+            final ByteBuf buffer, final byte[] expectedBytes, final boolean slice) throws Exception {
+        assertEquals(buffer.readableBytes(), expectedBytes.length);
         final CountDownLatch latch = new CountDownLatch(60000);
+        final AtomicReference<Throwable> innerThrowable = new AtomicReference<Throwable>();
         final CyclicBarrier barrier = new CyclicBarrier(11);
         for (int i = 0; i < 10; i++) {
             new Thread(new Runnable() {
                 @Override
                 public void run() {
-                    while (latch.getCount() > 0) {
-                        ByteBuf buf;
-                        if (slice) {
-                           buf = buffer.slice();
-                        } else {
-                           buf = buffer.duplicate();
-                        }
-                        TestGatheringByteChannel channel = new TestGatheringByteChannel();
-
-                        while (buf.isReadable()) {
-                            try {
-                                buf.readBytes(channel, buf.readableBytes());
-                            } catch (IOException e) {
-                                // Never happens
-                                return;
-                            }
-                        }
-                        assertArrayEquals(bytes, channel.writtenBytes());
-                        latch.countDown();
-                    }
                     try {
-                        barrier.await();
-                    } catch (Exception e) {
-                        // ignore
+                        while (latch.getCount() > 0) {
+                            ByteBuf buf;
+                            if (slice) {
+                               buf = buffer.slice();
+                            } else {
+                               buf = buffer.duplicate();
+                            }
+                            TestGatheringByteChannel channel = new TestGatheringByteChannel();
+
+                            while (buf.isReadable()) {
+                                try {
+                                    buf.readBytes(channel, buf.readableBytes());
+                                } catch (IOException e) {
+                                    // Never happens
+                                    return;
+                                }
+                            }
+                            assertArrayEquals(expectedBytes, channel.writtenBytes());
+                            latch.countDown();
+                        }
+                    } catch (Throwable e) {
+                        innerThrowable.compareAndSet(null, e);
+                    } finally {
+                        try {
+                            barrier.await();
+                        } catch (Exception e) {
+                            // ignore
+                        }
                     }
                 }
             }).start();
         }
-        latch.await(10, TimeUnit.SECONDS);
-        barrier.await(5, TimeUnit.SECONDS);
-        buffer.release();
+        try {
+            latch.await();
+            barrier.await(5, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            Throwable inner = innerThrowable.get();
+            if (inner != null) {
+                e.addSuppressed(inner);
+            }
+            throw e;
+        }
     }
 
     @Test
+    @Timeout(30)
     public void testDuplicateReadOutputStreamMultipleThreads() throws Exception {
-        testReadOutputStreamMultipleThreads(false);
-    }
-
-    @Test
-    public void testSliceReadOutputStreamMultipleThreads() throws Exception {
-        testReadOutputStreamMultipleThreads(true);
-    }
-
-    private void testReadOutputStreamMultipleThreads(final boolean slice) throws Exception {
         final byte[] bytes = new byte[8];
         random.nextBytes(bytes);
 
         final ByteBuf buffer = newBuffer(8);
         buffer.writeBytes(bytes);
+        try {
+            testReadOutputStreamMultipleThreads(buffer, bytes, false);
+        } finally {
+            buffer.release();
+        }
+    }
+
+    @Test
+    @Timeout(30)
+    public void testSliceReadOutputStreamMultipleThreads() throws Exception {
+        final byte[] bytes = new byte[8];
+        random.nextBytes(bytes);
+
+        final ByteBuf buffer = newBuffer(8);
+        buffer.writeBytes(bytes);
+        try {
+            testReadOutputStreamMultipleThreads(buffer, bytes, true);
+        } finally {
+            buffer.release();
+        }
+    }
+
+    static void testReadOutputStreamMultipleThreads(
+            final ByteBuf buffer, final byte[] expectedBytes, final boolean slice) throws Exception {
         final CountDownLatch latch = new CountDownLatch(60000);
+        final AtomicReference<Throwable> innerThrowable = new AtomicReference<Throwable>();
         final CyclicBarrier barrier = new CyclicBarrier(11);
         for (int i = 0; i < 10; i++) {
             new Thread(new Runnable() {
                 @Override
                 public void run() {
-                    while (latch.getCount() > 0) {
-                        ByteBuf buf;
-                        if (slice) {
-                            buf = buffer.slice();
-                        } else {
-                            buf = buffer.duplicate();
-                        }
-                        ByteArrayOutputStream out = new ByteArrayOutputStream();
-
-                        while (buf.isReadable()) {
-                            try {
-                                buf.readBytes(out, buf.readableBytes());
-                            } catch (IOException e) {
-                                // Never happens
-                                return;
-                            }
-                        }
-                        assertArrayEquals(bytes, out.toByteArray());
-                        latch.countDown();
-                    }
                     try {
-                        barrier.await();
-                    } catch (Exception e) {
-                        // ignore
+                        while (latch.getCount() > 0) {
+                            ByteBuf buf;
+                            if (slice) {
+                                buf = buffer.slice();
+                            } else {
+                                buf = buffer.duplicate();
+                            }
+                            ByteArrayOutputStream out = new ByteArrayOutputStream();
+
+                            while (buf.isReadable()) {
+                                try {
+                                    buf.readBytes(out, buf.readableBytes());
+                                } catch (IOException e) {
+                                    // Never happens
+                                    return;
+                                }
+                            }
+                            assertArrayEquals(expectedBytes, out.toByteArray());
+                            latch.countDown();
+                        }
+                    } catch (Throwable e) {
+                        innerThrowable.compareAndSet(null, e);
+                    } finally {
+                        try {
+                            barrier.await();
+                        } catch (Exception e) {
+                            // ignore
+                        }
                     }
                 }
             }).start();
         }
-        latch.await(10, TimeUnit.SECONDS);
-        barrier.await(5, TimeUnit.SECONDS);
-        buffer.release();
+        try {
+            latch.await();
+            barrier.await(5, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            Throwable inner = innerThrowable.get();
+            if (inner != null) {
+                e.addSuppressed(inner);
+            }
+            throw e;
+        }
     }
 
     @Test
     public void testDuplicateBytesInArrayMultipleThreads() throws Exception {
-        testBytesInArrayMultipleThreads(false);
-    }
-
-    @Test
-    public void testSliceBytesInArrayMultipleThreads() throws Exception {
-        testBytesInArrayMultipleThreads(true);
-    }
-
-    private void testBytesInArrayMultipleThreads(final boolean slice) throws Exception {
         final byte[] bytes = new byte[8];
         random.nextBytes(bytes);
 
         final ByteBuf buffer = newBuffer(8);
         buffer.writeBytes(bytes);
-        final AtomicReference<Throwable> cause = new AtomicReference<Throwable>();
-        final CountDownLatch latch = new CountDownLatch(60000);
-        final CyclicBarrier barrier = new CyclicBarrier(11);
-        for (int i = 0; i < 10; i++) {
-            new Thread(new Runnable() {
-                @Override
-                public void run() {
-                    while (cause.get() == null && latch.getCount() > 0) {
+        try {
+            testBytesInArrayMultipleThreads(buffer, bytes, false);
+        } finally {
+            buffer.release();
+        }
+    }
+
+    @Test
+    public void testSliceBytesInArrayMultipleThreads() throws Exception {
+        final byte[] bytes = new byte[8];
+        random.nextBytes(bytes);
+
+        final ByteBuf buffer = newBuffer(8);
+        buffer.writeBytes(bytes);
+        try {
+            testBytesInArrayMultipleThreads(buffer, bytes, true);
+        } finally {
+            buffer.release();
+        }
+    }
+
+    static void testBytesInArrayMultipleThreads(
+            final ByteBuf buffer, final byte[] expectedBytes, final boolean slice) throws Exception {
+        final CyclicBarrier startBarrier = new CyclicBarrier(10);
+        final CyclicBarrier endBarrier = new CyclicBarrier(11);
+        Callable<Void> callable = new Callable<Void>() {
+            @Override
+            public Void call() throws Exception {
+                startBarrier.await();
+                try {
+                    for (int i = 0; i < 6000; i++) {
                         ByteBuf buf;
                         if (slice) {
                             buf = buffer.slice();
@@ -2702,26 +2942,132 @@ public abstract class AbstractByteBufTest {
                         byte[] array = new byte[8];
                         buf.readBytes(array);
 
-                        assertArrayEquals(bytes, array);
+                        assertArrayEquals(expectedBytes, array);
 
                         Arrays.fill(array, (byte) 0);
                         buf.getBytes(0, array);
-                        assertArrayEquals(bytes, array);
-
-                        latch.countDown();
+                        assertArrayEquals(expectedBytes, array);
                     }
-                    try {
-                        barrier.await();
-                    } catch (Exception e) {
-                        // ignore
+                } finally {
+                    endBarrier.await();
+                }
+                return null;
+            }
+        };
+        List<FutureTask<Void>> tasks = new ArrayList<FutureTask<Void>>();
+        for (int i = 0; i < 10; i++) {
+            FutureTask<Void> task = new FutureTask<Void>(callable);
+            new Thread(task).start();
+            tasks.add(task);
+        }
+        try {
+            endBarrier.await(30, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            for (FutureTask<Void> task : tasks) {
+                try {
+                    task.get(100, TimeUnit.MILLISECONDS);
+                } catch (Exception ex) {
+                    e.addSuppressed(ex);
+                }
+            }
+            throw e;
+        }
+        for (FutureTask<Void> task : tasks) {
+            task.get(1, TimeUnit.SECONDS);
+        }
+    }
+
+    public static Object[][] setCharSequenceCombinations() {
+        List<Object[]> scenarios = new ArrayList<Object[]>();
+        List<Charset> charsets = Arrays.asList(
+                CharsetUtil.UTF_8,
+                CharsetUtil.US_ASCII,
+                CharsetUtil.ISO_8859_1);
+        for (Charset charset : charsets) {
+            for (CharSequenceType charSequenceType : CharSequenceType.values()) {
+                scenarios.add(new Object[] { charset, charSequenceType });
+            }
+        }
+        return scenarios.toArray(new Object[0][]);
+    }
+
+    enum CharSequenceType {
+        STRING,
+        ASCII_STRING;
+
+        public CharSequence create(char[] cs) {
+            switch (this) {
+                case STRING:
+                    return new String(cs);
+                case ASCII_STRING:
+                    return new AsciiString(cs);
+                default:
+                    throw new UnsupportedOperationException("Unknown type: " + this);
+            }
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    @ParameterizedTest
+    @MethodSource("setCharSequenceCombinations")
+    void testSetCharSequenceMultipleThreads(final Charset charset, CharSequenceType charSeqType) throws Exception {
+        int bufSize = 32;
+        ByteBuf[] bufs = new ByteBuf[16];
+        for (int i = 0; i < bufs.length; i++) {
+            bufs[i] = newBuffer(bufSize);
+        }
+
+        final int iterations = 256;
+        final Semaphore start = new Semaphore(0);
+        final Semaphore finish = new Semaphore(0);
+        char[] cs = new char[(int) (bufSize / charset.newEncoder().maxBytesPerChar())];
+        Arrays.fill(cs, 'a');
+        final CharSequence str = charSeqType.create(cs);
+        ExecutorService executor = Executors.newFixedThreadPool(bufs.length);
+        try {
+            Future<Void>[] futures = new Future[bufs.length];
+            for (int i = 0; i < bufs.length; i++) {
+                final ByteBuf buf = bufs[i];
+                futures[i] = executor.submit(new Callable<Void>() {
+                    @Override
+                    public Void call() throws Exception {
+                        finish.release();
+                        start.acquire();
+                        for (int j = 0; j < iterations; j++) {
+                            buf.setCharSequence(0, str, charset);
+                        }
+                        return null;
+                    }
+                });
+            }
+            finish.acquire(bufs.length);
+            start.release(bufs.length);
+            Exception e = null;
+            for (Future<Void> future : futures) {
+                try {
+                    future.get();
+                } catch (InterruptedException ex) {
+                    if (e != null) {
+                        ThrowableUtil.addSuppressed(ex, e);
+                    }
+                    throw ex; // Propagate interrupted exceptions immediately.
+                } catch (ExecutionException ex) {
+                    if (e != null) {
+                        e = ex;
+                    } else {
+                        ThrowableUtil.addSuppressed(e, ex);
                     }
                 }
-            }).start();
+            }
+            if (e != null) {
+                fail("Worker threads failed", e);
+            }
+        } finally {
+            executor.shutdown();
+            for (ByteBuf buf : bufs) {
+                buf.release();
+            }
         }
-        latch.await(10, TimeUnit.SECONDS);
-        barrier.await(5, TimeUnit.SECONDS);
-        assertNull(cause.get());
-        buffer.release();
     }
 
     @Test
@@ -2773,6 +3119,23 @@ public abstract class AbstractByteBufTest {
         final ByteBuf buffer = newBuffer(8);
         buffer.writerIndex(buffer.capacity());
         buffer.ensureWritable(8, force);
+        buffer.release();
+    }
+
+    @Test
+    public void ensureWritableWithForceAsReadyOnly() {
+        ensureWritableReadOnly(true);
+    }
+
+    @Test
+    public void ensureWritableWithOutForceAsReadOnly() {
+        ensureWritableReadOnly(false);
+    }
+
+    private void ensureWritableReadOnly(boolean force) {
+        final ByteBuf buffer = newBuffer(8);
+        buffer.writerIndex(buffer.capacity());
+        assertEquals(1, buffer.asReadOnly().ensureWritable(8, force));
         buffer.release();
     }
 
@@ -5414,6 +5777,14 @@ public abstract class AbstractByteBufTest {
         assertEquals(0, buf.refCnt());
     }
 
+    @Test
+    public void testReadOnlyRelease() {
+        ByteBuf buf = newBuffer(8);
+        assertEquals(1, buf.refCnt());
+        assertTrue(buf.asReadOnly().release());
+        assertEquals(0, buf.refCnt());
+    }
+
     // Test-case trying to reproduce:
     // https://github.com/netty/netty/issues/2843
     @Test
@@ -5642,6 +6013,7 @@ public abstract class AbstractByteBufTest {
 
             final ByteBuf buffer = newBuffer(4);
             assertEquals(1, buffer.refCnt());
+            final AtomicReference<Throwable> innerThrowable = new AtomicReference<Throwable>();
             final AtomicInteger cnt = new AtomicInteger(Integer.MAX_VALUE);
             Thread t1 = new Thread(new Runnable() {
                 @Override
@@ -5652,7 +6024,11 @@ public abstract class AbstractByteBufTest {
                     } else {
                         released = buffer.release();
                     }
-                    assertTrue(released);
+                    if (!released) {
+                        innerThrowable.set(new AssertionError("buffer was not released: " + buffer));
+                        latch.countDown();
+                        return;
+                    }
                     Thread t2 = new Thread(new Runnable() {
                         @Override
                         public void run() {
@@ -5672,6 +6048,10 @@ public abstract class AbstractByteBufTest {
             t1.start();
 
             latch.await();
+            Throwable inner = innerThrowable.get();
+            if (inner != null) {
+                fail(inner);
+            }
             assertEquals(0, cnt.get());
             innerLatch.countDown();
         }
@@ -5988,5 +6368,126 @@ public abstract class AbstractByteBufTest {
         assertEquals(0x0102030405060708L, buffer.getLongLE(0));
         buffer.setDoubleLE(0, Double.longBitsToDouble(0x0102030405060708L));
         assertEquals(0x0102030405060708L, Double.doubleToRawLongBits(buffer.getDoubleLE(0)));
+    }
+
+    @Test
+    public void testReadyOnlyNioBuffer() {
+        assertReadyOnlyNioBuffer(buffer.asReadOnly());
+    }
+
+    @Test
+    public void testReadyOnlySliceNioBuffer() {
+        assertReadyOnlyNioBuffer(buffer.asReadOnly().slice());
+    }
+
+    @Test
+    public void testReadyOnlyDuplicateNioBuffer() {
+        assertReadyOnlyNioBuffer(buffer.asReadOnly().duplicate());
+    }
+
+    static void assertReadyOnlyNioBuffer(ByteBuf buffer) {
+        assertTrue(buffer.isReadOnly());
+        assertTrue(buffer.nioBuffer().isReadOnly());
+    }
+
+    @Test
+    public void testReadyOnlyNioBufferWithPositionLength() {
+        assertReadyOnlyNioBufferWithPositionLength(buffer.asReadOnly());
+    }
+
+    @Test
+    public void testReadyOnlySliceNioBufferWithPositionLength() {
+        assertReadyOnlyNioBufferWithPositionLength(buffer.asReadOnly().slice());
+    }
+
+    @Test
+    public void testReadyOnlyDuplicateNioBufferWithPositionLength() {
+        assertReadyOnlyNioBufferWithPositionLength(buffer.asReadOnly().duplicate());
+    }
+
+    static void assertReadyOnlyNioBufferWithPositionLength(ByteBuf buffer) {
+        assertTrue(buffer.isReadOnly());
+        assertTrue(buffer.nioBuffer(0, buffer.capacity()).isReadOnly());
+    }
+
+    @Test
+    public void testReadyOnlyNioBuffers() {
+        assertReadyOnlyNioBuffers(buffer.asReadOnly());
+    }
+
+    @Test
+    public void testReadyOnlySliceNioBuffers() {
+        assertReadyOnlyNioBuffers(buffer.asReadOnly().slice());
+    }
+
+    @Test
+    public void testReadyOnlyDuplicateNioBuffers() {
+        assertReadyOnlyNioBuffers(buffer.asReadOnly().duplicate());
+    }
+
+    static void assertReadyOnlyNioBuffers(ByteBuf buffer) {
+        assertTrue(buffer.isReadOnly());
+        for (ByteBuffer nioBuffer: buffer.nioBuffers()) {
+            assertTrue(nioBuffer.isReadOnly());
+        }
+    }
+
+    @Test
+    public void testReadyOnlyNioBuffersWithPositionLength() {
+        assertReadyOnlyNioBuffersWithPositionLength(buffer.asReadOnly());
+    }
+
+    @Test
+    public void testReadyOnlySliceNioBuffersWithPositionLength() {
+        assertReadyOnlyNioBuffersWithPositionLength(buffer.asReadOnly().slice());
+    }
+
+    @Test
+    public void testReadyOnlyDuplicateNioBuffersWithPositionLength() {
+        assertReadyOnlyNioBuffersWithPositionLength(buffer.asReadOnly().duplicate());
+    }
+
+    static void assertReadyOnlyNioBuffersWithPositionLength(ByteBuf buffer) {
+        assertTrue(buffer.isReadOnly());
+        for (ByteBuffer nioBuffer: buffer.asReadOnly().nioBuffers(0, buffer.capacity())) {
+            assertTrue(nioBuffer.isReadOnly());
+        }
+    }
+
+    @Test
+    public void testMaxFastWritableBytesTracksWrittenBytes() {
+        final ByteBuf buf = newBuffer(4, 10);
+        int max = buf.maxFastWritableBytes();
+        buf.writeByte(1);
+        assertEquals(max - 1, buf.maxFastWritableBytes());
+        buf.release();
+    }
+
+    @Test
+    public void testSetCharSequenceWithTooLongSequence() {
+        final ByteBuf buffer = buffer(4, 128);
+        final CharSequence sequence = "ÖÄÜ€";
+        int maxBytes = ByteBufUtil.utf8MaxBytes(sequence);
+        assertThat(buffer.writableBytes()).isLessThan(maxBytes);
+        assertThrows(IndexOutOfBoundsException.class, new Executable() {
+            @Override
+            public void execute() throws Throwable {
+                buffer.setCharSequence(0, sequence, CharsetUtil.UTF_8);
+            }
+        });
+        buffer.release();
+    }
+
+    @Test
+    public void testWriteCharSequence() {
+        ByteBuf buffer = buffer(4, 128);
+        CharSequence sequence = "ÖÄÜ€";
+        int maxBytes = ByteBufUtil.utf8MaxBytes(sequence);
+        assertThat(buffer.writableBytes()).isLessThan(maxBytes);
+        int capacity = buffer.capacity();
+        // This should expand the buffer.
+        buffer.writeCharSequence(sequence, CharsetUtil.UTF_8);
+        assertNotSame(capacity, buffer.capacity());
+        buffer.release();
     }
 }

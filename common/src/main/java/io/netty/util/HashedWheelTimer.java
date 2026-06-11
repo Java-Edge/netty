@@ -418,7 +418,14 @@ public class HashedWheelTimer implements Timer {
                 assert closed;
             }
         }
-        return worker.unprocessedTimeouts();
+        Set<Timeout> unprocessed = worker.unprocessedTimeouts();
+        Set<Timeout> cancelled = new HashSet<Timeout>(unprocessed.size());
+        for (Timeout timeout : unprocessed) {
+            if (timeout.cancel()) {
+                cancelled.add(timeout);
+            }
+        }
+        return cancelled;
     }
 
     @Override
@@ -662,9 +669,8 @@ public class HashedWheelTimer implements Timer {
             HashedWheelBucket bucket = this.bucket;
             if (bucket != null) {
                 bucket.remove(this);
-            } else {
-                timer.pendingTimeouts.decrementAndGet();
             }
+            timer.pendingTimeouts.decrementAndGet();
         }
 
         public boolean compareAndSetState(int expected, int state) {
@@ -691,6 +697,7 @@ public class HashedWheelTimer implements Timer {
             }
 
             try {
+                remove();
                 timer.taskExecutor.execute(this);
             } catch (Throwable t) {
                 if (logger.isWarnEnabled()) {
@@ -776,7 +783,6 @@ public class HashedWheelTimer implements Timer {
             while (timeout != null) {
                 HashedWheelTimeout next = timeout.next;
                 if (timeout.remainingRounds <= 0) {
-                    next = remove(timeout);
                     if (timeout.deadline <= deadline) {
                         timeout.expire();
                     } else {
@@ -784,9 +790,7 @@ public class HashedWheelTimer implements Timer {
                         throw new IllegalStateException(String.format(
                                 "timeout.deadline (%d) > deadline (%d)", timeout.deadline, deadline));
                     }
-                } else if (timeout.isCancelled()) {
-                    next = remove(timeout);
-                } else {
+                } else if (!timeout.isCancelled()) {
                     timeout.remainingRounds --;
                 }
                 timeout = next;
@@ -819,7 +823,6 @@ public class HashedWheelTimer implements Timer {
             timeout.prev = null;
             timeout.next = null;
             timeout.bucket = null;
-            timeout.timer.pendingTimeouts.decrementAndGet();
             return next;
         }
 

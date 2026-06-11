@@ -46,6 +46,7 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.function.Executable;
 
 import java.net.ConnectException;
+import java.nio.channels.AlreadyConnectedException;
 import java.nio.channels.ClosedChannelException;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
@@ -53,11 +54,9 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
-import static org.hamcrest.CoreMatchers.instanceOf;
-import static org.hamcrest.CoreMatchers.is;
-import static org.hamcrest.MatcherAssert.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -177,14 +176,12 @@ public class LocalChannelTest {
                 cc.writeAndFlush(new Object()).sync();
                 fail("must raise a ClosedChannelException");
             } catch (Exception e) {
-                assertThat(e, is(instanceOf(ClosedChannelException.class)));
+                assertInstanceOf(ClosedChannelException.class, e);
                 // Ensure that the actual write attempt on a closed channel was never made by asserting that
                 // the ClosedChannelException has been created by AbstractUnsafe rather than transport implementations.
                 if (e.getStackTrace().length > 0) {
-                    assertThat(
-                            e.getStackTrace()[0].getClassName(), is(AbstractChannel.class.getName() +
-                                    "$AbstractUnsafe"));
-                    e.printStackTrace();
+                   assertEquals(AbstractChannel.class.getName() +
+                           "$AbstractUnsafe", e.getStackTrace()[0].getClassName());
                 }
             }
         } finally {
@@ -883,6 +880,48 @@ public class LocalChannelTest {
                 sb.connect(LocalAddress.ANY).syncUninterruptibly();
             }
         });
+    }
+
+    @Test
+    public void testConnectedAlready() throws Exception {
+        Bootstrap cb = new Bootstrap();
+        ServerBootstrap sb = new ServerBootstrap();
+        final AtomicReference<Throwable> causeRef = new AtomicReference<Throwable>();
+        cb.group(group1)
+                .channel(LocalChannel.class)
+                .handler(new ChannelInboundHandlerAdapter() {
+                    @Override
+                    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
+                        causeRef.set(cause);
+                    }
+                });
+
+        sb.group(group2)
+                .channel(LocalServerChannel.class)
+                .childHandler(new ChannelInitializer<LocalChannel>() {
+                    @Override
+                    public void initChannel(LocalChannel ch) throws Exception {
+                        ch.pipeline().addLast(new TestHandler());
+                    }
+                });
+
+        Channel sc = null;
+        Channel cc = null;
+        try {
+            // Start server
+            sc = sb.bind(TEST_ADDRESS).sync().channel();
+
+            // Connect to the server
+            cc = cb.connect(sc.localAddress()).sync().channel();
+
+            ChannelFuture f = cc.connect(sc.localAddress()).awaitUninterruptibly();
+            assertInstanceOf(AlreadyConnectedException.class, f.cause());
+            cc.close().syncUninterruptibly();
+            assertNull(causeRef.get());
+        } finally {
+            closeChannel(cc);
+            closeChannel(sc);
+        }
     }
 
     private static final class LatchChannelFutureListener extends CountDownLatch implements ChannelFutureListener {

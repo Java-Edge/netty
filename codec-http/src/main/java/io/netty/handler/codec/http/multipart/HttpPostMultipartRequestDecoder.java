@@ -41,6 +41,7 @@ import java.nio.charset.IllegalCharsetNameException;
 import java.nio.charset.UnsupportedCharsetException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.TreeMap;
 
@@ -63,6 +64,16 @@ public class HttpPostMultipartRequestDecoder implements InterfaceHttpPostRequest
      * Request to decode
      */
     private final HttpRequest request;
+
+    /**
+     * The maximum number of fields allows by the form
+     */
+    private final int maxFields;
+
+    /**
+     * The maximum number of accumulated bytes when decoding a field
+     */
+    private final int maxBufferedBytes;
 
     /**
      * Default charset to use
@@ -175,9 +186,35 @@ public class HttpPostMultipartRequestDecoder implements InterfaceHttpPostRequest
      *             errors
      */
     public HttpPostMultipartRequestDecoder(HttpDataFactory factory, HttpRequest request, Charset charset) {
+        this(factory, request, charset, HttpPostRequestDecoder.DEFAULT_MAX_FIELDS,
+                HttpPostRequestDecoder.DEFAULT_MAX_BUFFERED_BYTES);
+    }
+
+    /**
+     *
+     * @param factory
+     *            the factory used to create InterfaceHttpData
+     * @param request
+     *            the request to decode
+     * @param charset
+     *            the charset to use as default
+     * @param maxFields
+     *            the maximum number of fields the form can have, {@code -1} to disable
+     * @param maxBufferedBytes
+     *            the maximum number of bytes the decoder can buffer when decoding a field, {@code -1} to disable
+     * @throws NullPointerException
+     *             for request or charset or factory
+     * @throws ErrorDataDecoderException
+     *             if the default charset was wrong when decoding or other
+     *             errors
+     */
+    public HttpPostMultipartRequestDecoder(HttpDataFactory factory, HttpRequest request, Charset charset,
+                                           int maxFields, int maxBufferedBytes) {
         this.request = checkNotNull(request, "request");
         this.charset = checkNotNull(charset, "charset");
         this.factory = checkNotNull(factory, "factory");
+        this.maxFields = maxFields;
+        this.maxBufferedBytes = maxBufferedBytes;
         // Fill default values
 
         String contentTypeValue = this.request.headers().get(HttpHeaderNames.CONTENT_TYPE);
@@ -346,6 +383,9 @@ public class HttpPostMultipartRequestDecoder implements InterfaceHttpPostRequest
             undecodedChunk.writeBytes(buf);
         }
         parseBody();
+        if (maxBufferedBytes > 0 && undecodedChunk != null && undecodedChunk.readableBytes() > maxBufferedBytes) {
+            throw new HttpPostRequestDecoder.TooLongFormFieldException();
+        }
         if (undecodedChunk != null && undecodedChunk.writerIndex() > discardThreshold) {
             if (undecodedChunk.refCnt() == 1) {
                 // It's safe to call discardBytes() as we are the only owner of the buffer.
@@ -439,6 +479,9 @@ public class HttpPostMultipartRequestDecoder implements InterfaceHttpPostRequest
     protected void addHttpData(InterfaceHttpData data) {
         if (data == null) {
             return;
+        }
+        if (maxFields > 0 && bodyListHttpData.size() >= maxFields) {
+            throw new HttpPostRequestDecoder.TooManyFormFieldsException();
         }
         List<InterfaceHttpData> datas = bodyMapHttpData.get(data.getName());
         if (datas == null) {
@@ -877,7 +920,11 @@ public class HttpPostMultipartRequestDecoder implements InterfaceHttpPostRequest
         if (encoding != null) {
             String code;
             try {
-                code = encoding.getValue().toLowerCase();
+                // RFC 2045 Content-Transfer-Encoding values are case-insensitive ASCII tokens.
+                // toLowerCase() without a Locale would corrupt them under Turkish (tr_TR) locale,
+                // where 'I' lowercases to 'ı' (U+0131) and "BINARY" becomes "bınary" - never
+                // matching the lowercase ASCII constants compared against below.
+                code = encoding.getValue().toLowerCase(Locale.US);
             } catch (IOException e) {
                 throw new ErrorDataDecoderException(e);
             }

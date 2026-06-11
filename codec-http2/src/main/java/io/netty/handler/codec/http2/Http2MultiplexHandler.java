@@ -31,7 +31,6 @@ import io.netty.handler.codec.http2.Http2FrameCodec.DefaultHttp2FrameStream;
 import io.netty.handler.ssl.SslCloseCompletionEvent;
 import io.netty.util.ReferenceCounted;
 import io.netty.util.internal.ObjectUtil;
-import io.netty.util.internal.UnstableApi;
 
 import java.util.ArrayDeque;
 import java.util.Queue;
@@ -98,7 +97,6 @@ import static io.netty.handler.codec.http2.Http2Exception.connectionError;
  * and send a {@link Http2ResetFrame} with the unwrapped {@link Http2Error} set. Another possibility is to just
  * directly write a {@link Http2ResetFrame} to the {@link Http2StreamChannel}l.
  */
-@UnstableApi
 public final class Http2MultiplexHandler extends Http2ChannelDuplexHandler {
 
     static final ChannelFutureListener CHILD_CHANNEL_REGISTRATION_LISTENER = new ChannelFutureListener() {
@@ -184,9 +182,9 @@ public final class Http2MultiplexHandler extends Http2ChannelDuplexHandler {
                     (DefaultHttp2FrameStream) streamFrame.stream();
 
             AbstractHttp2StreamChannel channel = (AbstractHttp2StreamChannel) s.attachment;
-            if (msg instanceof Http2ResetFrame) {
-                // Reset frames needs to be propagated via user events as these are not flow-controlled and so
-                // must not be controlled by suppressing channel.read() on the child channel.
+            if (msg instanceof Http2ResetFrame || msg instanceof Http2PriorityFrame) {
+                // Reset and Priority frames needs to be propagated via user events as these are not flow-controlled and
+                // so must not be controlled by suppressing channel.read() on the child channel.
                 channel.pipeline().fireUserEventTriggered(msg);
 
                 // RST frames will also trigger closing of the streams which then will call

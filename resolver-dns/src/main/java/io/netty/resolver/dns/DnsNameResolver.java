@@ -58,6 +58,7 @@ import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.FutureListener;
 import io.netty.util.concurrent.GenericFutureListener;
 import io.netty.util.concurrent.Promise;
+import io.netty.util.concurrent.PromiseNotifier;
 import io.netty.util.internal.EmptyArrays;
 import io.netty.util.internal.PlatformDependent;
 import io.netty.util.internal.StringUtil;
@@ -72,6 +73,7 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.NetworkInterface;
 import java.net.SocketAddress;
+import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -81,6 +83,7 @@ import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
@@ -100,8 +103,8 @@ public class DnsNameResolver extends InetNameResolver {
 
     private static final InternalLogger logger = InternalLoggerFactory.getInstance(DnsNameResolver.class);
     private static final String LOCALHOST = "localhost";
+    private static final String DOT_LOCALHOST = '.' + LOCALHOST;
     private static final String WINDOWS_HOST_NAME;
-    private static final InetAddress LOCALHOST_ADDRESS;
     private static final DnsRecord[] EMPTY_ADDITIONALS = new DnsRecord[0];
     private static final DnsRecordType[] IPV4_ONLY_RESOLVED_RECORD_TYPES =
             {DnsRecordType.A};
@@ -134,18 +137,14 @@ public class DnsNameResolver extends InetNameResolver {
     static {
         if (NetUtil.isIpV4StackPreferred() || !anyInterfaceSupportsIpV6()) {
             DEFAULT_RESOLVE_ADDRESS_TYPES = ResolvedAddressTypes.IPV4_ONLY;
-            LOCALHOST_ADDRESS = NetUtil.LOCALHOST4;
         } else {
             if (NetUtil.isIpV6AddressesPreferred()) {
                 DEFAULT_RESOLVE_ADDRESS_TYPES = ResolvedAddressTypes.IPV6_PREFERRED;
-                LOCALHOST_ADDRESS = NetUtil.LOCALHOST6;
             } else {
                 DEFAULT_RESOLVE_ADDRESS_TYPES = ResolvedAddressTypes.IPV4_PREFERRED;
-                LOCALHOST_ADDRESS = NetUtil.LOCALHOST4;
             }
         }
         logger.debug("Default ResolvedAddressTypes: {}", DEFAULT_RESOLVE_ADDRESS_TYPES);
-        logger.debug("Localhost address: {}", LOCALHOST_ADDRESS);
 
         String hostName;
         try {
@@ -234,9 +233,6 @@ public class DnsNameResolver extends InetNameResolver {
     };
     private static final DatagramDnsQueryEncoder DATAGRAM_ENCODER = new DatagramDnsQueryEncoder();
 
-    private final Promise<Channel> channelReadyPromise;
-    private final Channel ch;
-
     // Comparator that ensures we will try first to use the nameservers that use our preferred address type.
     private final Comparator<InetSocketAddress> nameServerComparator;
     /**
@@ -270,6 +266,7 @@ public class DnsNameResolver extends InetNameResolver {
     private final boolean decodeIdn;
     private final DnsQueryLifecycleObserverFactory dnsQueryLifecycleObserverFactory;
     private final boolean completeOncePreferredResolved;
+    private final DnsResolveChannelProvider resolveChannelProvider;
     private final Bootstrap socketBootstrap;
     private final boolean retryWithTcpOnTimeout;
 
@@ -380,9 +377,10 @@ public class DnsNameResolver extends InetNameResolver {
              dnsQueryLifecycleObserverFactory, queryTimeoutMillis, resolvedAddressTypes, recursionDesired,
              maxQueriesPerResolve, traceEnabled, maxPayloadSize, optResourceEnabled, hostsFileEntriesResolver,
              dnsServerAddressStreamProvider, new ThreadLocalNameServerAddressStream(dnsServerAddressStreamProvider),
-             searchDomains, ndots, decodeIdn, false, 0);
+             searchDomains, ndots, decodeIdn, false, 0, DnsNameResolverChannelStrategy.ChannelPerResolver);
     }
 
+    @SuppressWarnings("deprecation")
     DnsNameResolver(
             EventLoop eventLoop,
             ChannelFactory<? extends DatagramChannel> channelFactory,
@@ -398,7 +396,7 @@ public class DnsNameResolver extends InetNameResolver {
             boolean recursionDesired,
             int maxQueriesPerResolve,
             boolean traceEnabled,
-            int maxPayloadSize,
+            final int maxPayloadSize,
             boolean optResourceEnabled,
             HostsFileEntriesResolver hostsFileEntriesResolver,
             DnsServerAddressStreamProvider dnsServerAddressStreamProvider,
@@ -407,7 +405,7 @@ public class DnsNameResolver extends InetNameResolver {
             int ndots,
             boolean decodeIdn,
             boolean completeOncePreferredResolved,
-            int maxNumConsolidation) {
+            int maxNumConsolidation, DnsNameResolverChannelStrategy datagramChannelStrategy) {
         super(eventLoop);
         this.queryTimeoutMillis = queryTimeoutMillis >= 0
             ? queryTimeoutMillis
@@ -487,58 +485,34 @@ public class DnsNameResolver extends InetNameResolver {
             inflightLookups = null;
         }
 
-        Bootstrap b = new Bootstrap()
-                .group(executor())
+        final DnsResponseHandler responseHandler = new DnsResponseHandler(queryContextManager);
+        Bootstrap bootstrap = new Bootstrap()
                 .channelFactory(channelFactory)
-                .attr(DNS_PIPELINE_ATTRIBUTE, Boolean.TRUE);
-        this.channelReadyPromise = executor().newPromise();
-        final DnsResponseHandler responseHandler =
-                new DnsResponseHandler(channelReadyPromise);
-        b.handler(new ChannelInitializer<DatagramChannel>() {
-            @Override
-            protected void initChannel(DatagramChannel ch) {
-                ch.pipeline().addLast(DATAGRAM_ENCODER, DATAGRAM_DECODER, responseHandler);
-            }
-        });
-
-        if (localAddress == null) {
-            localAddress = new InetSocketAddress(0);
-        }
-
-        ChannelFuture future = b.bind(localAddress);
-        if (future.isDone()) {
-            Throwable cause = future.cause();
-            if (cause != null) {
-                if (cause instanceof RuntimeException) {
-                    throw (RuntimeException) cause;
-                }
-                if (cause instanceof Error) {
-                    throw (Error) cause;
-                }
-                throw new IllegalStateException("Unable to create / register Channel", cause);
-            }
-        } else {
-            future.addListener(new ChannelFutureListener() {
-                @Override
-                public void operationComplete(ChannelFuture future) {
-                    Throwable cause = future.cause();
-                    if (cause != null) {
-                        channelReadyPromise.tryFailure(cause);
+                .group(eventLoop)
+                .attr(DNS_PIPELINE_ATTRIBUTE, Boolean.TRUE)
+                .handler(new ChannelInitializer<DatagramChannel>() {
+                    @Override
+                    protected void initChannel(DatagramChannel ch) {
+                        ch.config().setRecvByteBufAllocator(new FixedRecvByteBufAllocator(maxPayloadSize));
+                        ch.pipeline().addLast(DATAGRAM_ENCODER, DATAGRAM_DECODER, responseHandler);
                     }
-                }
-            });
+                });
+        if (localAddress == null) {
+            bootstrap.option(ChannelOption.DATAGRAM_CHANNEL_ACTIVE_ON_REGISTRATION, true);
         }
-        ch = future.channel();
-        ch.config().setRecvByteBufAllocator(new FixedRecvByteBufAllocator(maxPayloadSize));
+        this.resolveChannelProvider = newProvider(datagramChannelStrategy, bootstrap, localAddress);
+    }
 
-        ch.closeFuture().addListener(new ChannelFutureListener() {
-            @Override
-            public void operationComplete(ChannelFuture future) {
-                resolveCache.clear();
-                cnameCache.clear();
-                authoritativeDnsServerCache.clear();
-            }
-        });
+    private static DnsResolveChannelProvider newProvider(DnsNameResolverChannelStrategy channelStrategy,
+                                                         Bootstrap bootstrap, SocketAddress localAddress) {
+        switch (channelStrategy) {
+            case ChannelPerResolver:
+                return new DnsResolveChannelPerResolverProvider(bootstrap, localAddress);
+            case ChannelPerResolution:
+                return new DnsResolveChannelPerResolutionProvider(bootstrap, localAddress);
+            default:
+                throw new IllegalArgumentException("Unknown DnsNameResolverChannelStrategy: " + channelStrategy);
+        }
     }
 
     static InternetProtocolFamily preferredAddressType(ResolvedAddressTypes resolvedAddressTypes) {
@@ -708,9 +682,10 @@ public class DnsNameResolver extends InetNameResolver {
      */
     @Override
     public void close() {
-        if (ch.isOpen()) {
-            ch.close();
-        }
+        resolveChannelProvider.close();
+        resolveCache.clear();
+        cnameCache.clear();
+        authoritativeDnsServerCache.clear();
     }
 
     @Override
@@ -723,7 +698,7 @@ public class DnsNameResolver extends InetNameResolver {
             return null;
         }
         InetAddress address = hostsFileEntriesResolver.address(hostname, resolvedAddressTypes);
-        return address == null && isLocalWindowsHost(hostname) ? LOCALHOST_ADDRESS : address;
+        return address == null && isLocalHostAddress(hostname)? getLocalHostAddress() : address;
     }
 
     private List<InetAddress> resolveHostsFileEntries(String hostname) {
@@ -736,23 +711,54 @@ public class DnsNameResolver extends InetNameResolver {
                     .addresses(hostname, resolvedAddressTypes);
         } else {
             InetAddress address = hostsFileEntriesResolver.address(hostname, resolvedAddressTypes);
-            addresses = address != null ? Collections.singletonList(address) : null;
+            addresses = address != null? Collections.singletonList(address) : null;
         }
-        return addresses == null && isLocalWindowsHost(hostname) ?
-                Collections.singletonList(LOCALHOST_ADDRESS) : addresses;
+        return addresses == null && isLocalHostAddress(hostname)?
+                Collections.singletonList(getLocalHostAddress()) : addresses;
     }
 
     /**
-     * Checks whether the given hostname is the localhost/host (computer) name on Windows OS.
-     * Windows OS removed the localhost/host (computer) name information from the hosts file in the later versions
-     * and such hostname cannot be resolved from hosts file.
-     * See https://github.com/netty/netty/issues/5386
-     * See https://github.com/netty/netty/issues/11142
+     * Checks whether the given hostname refers to the current computer. This is the case for:
+     * <ul>
+     *     <li>localhost.</li>
+     *     <li>any domain within .localhost.</li>
+     *     <li>the hostname of the local computer on Windows</li>
+     * </ul>
+     * <p>
+     * According to RFC 6761 Section 6.3, localhost and subdomains of localhost should be resolved to the loopback
+     * address by name resolution libraries without querying DNS servers. The hostname of the local machine can usually
+     * be resolved from the hosts file, but on Windows, this is no longer possible.
+     *
+     * @param hostname the hostname that's being looked up
+     * @return true if the hostname should point to the loopback adress. False otherwise.
+     * @see <a href="https://github.com/netty/netty/issues/5386">Issue 5386</a>
+     * @see <a href="https://github.com/netty/netty/issues/11142">Issue 11142</a>
+     * @see <a href="https://github.com/netty/netty/issues/16744">Issue 16744</a>
+     * @see <a href="https://www.rfc-editor.org/rfc/rfc6761.html#section-6.3">RFC 6761</a>
      */
-    private static boolean isLocalWindowsHost(String hostname) {
-        return PlatformDependent.isWindows() &&
-                (LOCALHOST.equalsIgnoreCase(hostname) ||
-                        (WINDOWS_HOST_NAME != null && WINDOWS_HOST_NAME.equalsIgnoreCase(hostname)));
+    private static boolean isLocalHostAddress(String hostname) {
+        if (PlatformDependent.isWindows() && WINDOWS_HOST_NAME != null &&
+            WINDOWS_HOST_NAME.equalsIgnoreCase(hostname)) {
+            return true;
+        }
+
+        if (hostname.endsWith(".")) {
+            hostname = hostname.substring(0, hostname.length() - 1);
+        }
+        return hostname.equalsIgnoreCase(LOCALHOST) || hostname.toLowerCase(Locale.US).endsWith(DOT_LOCALHOST);
+    }
+
+    private InetAddress getLocalHostAddress() {
+        switch (resolvedAddressTypes) {
+        case IPV4_ONLY:
+        case IPV4_PREFERRED:
+            return NetUtil.LOCALHOST4;
+        case IPV6_ONLY:
+        case IPV6_PREFERRED:
+            return NetUtil.LOCALHOST6;
+        default:
+            throw new IllegalStateException("Unknown ResolvedAddressTypes " + resolvedAddressTypes);
+        }
     }
 
     /**
@@ -876,8 +882,8 @@ public class DnsNameResolver extends InetNameResolver {
         return resolveAll(question, additionalsArray, promise);
     }
 
-    private Future<List<DnsRecord>> resolveAll(DnsQuestion question, DnsRecord[] additionals,
-                                               Promise<List<DnsRecord>> promise) {
+    private Future<List<DnsRecord>> resolveAll(final DnsQuestion question, final DnsRecord[] additionals,
+                                               final Promise<List<DnsRecord>> promise) {
         checkNotNull(question, "question");
         checkNotNull(promise, "promise");
 
@@ -919,12 +925,48 @@ public class DnsNameResolver extends InetNameResolver {
             }
         }
 
-        // It was not A/AAAA question or there was no entry in /etc/hosts.
-        final DnsServerAddressStream nameServerAddrs =
-                dnsServerAddressStreamProvider.nameServerAddressStream(hostname);
-        new DnsRecordResolveContext(this, ch, channelReadyPromise, promise, question, additionals,
-                nameServerAddrs, maxQueriesPerResolve).resolve(promise);
+        ChannelFuture f = resolveChannelProvider.nextResolveChannel(promise);
+        if (f.isDone()) {
+            resolveAllNow(f, hostname, question, additionals, promise);
+        } else {
+            f.addListener(new ChannelFutureListener() {
+                @Override
+                public void operationComplete(ChannelFuture f) {
+                    resolveAllNow(f, hostname, question, additionals, promise);
+                }
+            });
+        }
         return promise;
+    }
+
+    private void resolveAllNow(ChannelFuture f, String hostname, final DnsQuestion question,
+                               final DnsRecord[] additionals, final Promise<List<DnsRecord>> promise) {
+        if (f.isSuccess()) {
+            // It was not A/AAAA question or there was no entry in /etc/hosts.
+            final DnsServerAddressStream nameServerAddrs =
+                    dnsServerAddressStreamProvider.nameServerAddressStream(hostname);
+
+            new DnsRecordResolveContext(DnsNameResolver.this, f.channel(), promise, question, additionals,
+                    nameServerAddrs, maxQueriesPerResolve).resolve(promise);
+        } else {
+            UnknownHostException e = toException(f, hostname, question, additionals);
+            promise.setFailure(e);
+        }
+    }
+
+    private static UnknownHostException toException(
+            ChannelFuture f, String hostname, DnsQuestion question, DnsRecord[] additionals) {
+        UnknownHostException e = new UnknownHostException(
+                "Failed to resolve '" + hostname + "', couldn't setup transport: " + f.channel());
+        e.initCause(f.cause());
+
+        if (question != null) {
+            ReferenceCountUtil.release(question);
+        }
+        for (DnsRecord record : additionals) {
+            ReferenceCountUtil.release(record);
+        }
+        return e;
     }
 
     private static DnsRecord[] toArray(Iterable<DnsRecord> additionals, boolean validateType) {
@@ -967,9 +1009,9 @@ public class DnsNameResolver extends InetNameResolver {
      * instead of using the global one.
      */
     protected void doResolve(String inetHost,
-                             DnsRecord[] additionals,
-                             Promise<InetAddress> promise,
-                             DnsCache resolveCache) throws Exception {
+                             final DnsRecord[] additionals,
+                             final Promise<InetAddress> promise,
+                             final DnsCache resolveCache) throws Exception {
         if (inetHost == null || inetHost.isEmpty()) {
             // If an empty hostname is used we should use "localhost", just like InetAddress.getByName(...) does.
             promise.setSuccess(loopbackAddress());
@@ -991,7 +1033,29 @@ public class DnsNameResolver extends InetNameResolver {
         }
 
         if (!doResolveCached(hostname, additionals, promise, resolveCache)) {
-            doResolveUncached(hostname, additionals, promise, resolveCache, completeOncePreferredResolved);
+            ChannelFuture f = resolveChannelProvider.nextResolveChannel(promise);
+            if (f.isDone()) {
+                doResolveNow(f, hostname, additionals, promise, resolveCache);
+            } else {
+                f.addListener(new ChannelFutureListener() {
+                    @Override
+                    public void operationComplete(ChannelFuture f) {
+                        doResolveNow(f, hostname, additionals, promise, resolveCache);
+                    }
+                });
+            }
+        }
+    }
+
+    private void doResolveNow(ChannelFuture f, final String hostname, final DnsRecord[] additionals,
+                              final Promise<InetAddress> promise,
+                              final DnsCache resolveCache) {
+        if (f.isSuccess()) {
+            doResolveUncached(f.channel(), hostname, additionals, promise,
+                    resolveCache, completeOncePreferredResolved);
+        } else {
+            UnknownHostException e = toException(f, hostname, null, additionals);
+            promise.setFailure(e);
         }
     }
 
@@ -1044,12 +1108,14 @@ public class DnsNameResolver extends InetNameResolver {
         }
     }
 
-    private void doResolveUncached(String hostname,
+    private void doResolveUncached(Channel channel,
+                                   String hostname,
                                    DnsRecord[] additionals,
                                    final Promise<InetAddress> promise,
                                    DnsCache resolveCache, boolean completeEarlyIfPossible) {
         final Promise<List<InetAddress>> allPromise = executor().newPromise();
-        doResolveAllUncached(hostname, additionals, promise, allPromise, resolveCache, completeEarlyIfPossible);
+        doResolveAllUncached(channel, hostname, additionals, promise, allPromise,
+                resolveCache, completeEarlyIfPossible);
         allPromise.addListener(new FutureListener<List<InetAddress>>() {
             @Override
             public void operationComplete(Future<List<InetAddress>> future) {
@@ -1072,9 +1138,9 @@ public class DnsNameResolver extends InetNameResolver {
      * instead of using the global one.
      */
     protected void doResolveAll(String inetHost,
-                                DnsRecord[] additionals,
-                                Promise<List<InetAddress>> promise,
-                                DnsCache resolveCache) throws Exception {
+                                final DnsRecord[] additionals,
+                                final Promise<List<InetAddress>> promise,
+                                final DnsCache resolveCache) throws Exception {
         if (inetHost == null || inetHost.isEmpty()) {
             // If an empty hostname is used we should use "localhost", just like InetAddress.getAllByName(...) does.
             promise.setSuccess(Collections.singletonList(loopbackAddress()));
@@ -1095,19 +1161,57 @@ public class DnsNameResolver extends InetNameResolver {
             return;
         }
 
-        if (!doResolveAllCached(hostname, additionals, promise, resolveCache, resolvedInternetProtocolFamilies)) {
-            doResolveAllUncached(hostname, additionals, promise, promise,
-                                 resolveCache, completeOncePreferredResolved);
+        if (!doResolveAllCached(hostname, additionals, promise, resolveCache, this.searchDomains(),
+                ndots(), resolvedInternetProtocolFamilies)) {
+            ChannelFuture f = resolveChannelProvider.nextResolveChannel(promise);
+            if (f.isDone()) {
+                doResolveAllNow(f, hostname, additionals, promise, resolveCache);
+            } else {
+                f.addListener(new ChannelFutureListener() {
+                    @Override
+                    public void operationComplete(ChannelFuture f) {
+                        doResolveAllNow(f, hostname, additionals, promise, resolveCache);
+                    }
+                });
+            }
         }
+    }
+
+    private void doResolveAllNow(ChannelFuture f, final String hostname, final DnsRecord[] additionals,
+                              final Promise<List<InetAddress>> promise,
+                              final DnsCache resolveCache) {
+        if (f.isSuccess()) {
+            doResolveAllUncached(f.channel(), hostname, additionals, promise, promise,
+                    resolveCache, completeOncePreferredResolved);
+        } else {
+            UnknownHostException e = toException(f, hostname, null, additionals);
+            promise.setFailure(e);
+        }
+    }
+
+    private static boolean hasEntries(List<? extends DnsCacheEntry> cachedEntries) {
+        return cachedEntries != null && !cachedEntries.isEmpty();
     }
 
     static boolean doResolveAllCached(String hostname,
                                       DnsRecord[] additionals,
                                       Promise<List<InetAddress>> promise,
                                       DnsCache resolveCache,
+                                      String[] searchDomains,
+                                      int ndots,
                                       InternetProtocolFamily[] resolvedInternetProtocolFamilies) {
-        final List<? extends DnsCacheEntry> cachedEntries = resolveCache.get(hostname, additionals);
-        if (cachedEntries == null || cachedEntries.isEmpty()) {
+        List<? extends DnsCacheEntry> cachedEntries = resolveCache.get(hostname, additionals);
+        if (!hasEntries(cachedEntries) && searchDomains != null && ndots != 0
+                && !StringUtil.endsWith(hostname, '.')) {
+            for (String searchDomain : searchDomains) {
+                final String initialHostname = hostname + '.' + searchDomain;
+                cachedEntries = resolveCache.get(initialHostname, additionals);
+                if (hasEntries(cachedEntries)) {
+                    break;
+                }
+            }
+        }
+        if (!hasEntries(cachedEntries)) {
             return false;
         }
 
@@ -1137,7 +1241,8 @@ public class DnsNameResolver extends InetNameResolver {
         }
     }
 
-    private void doResolveAllUncached(final String hostname,
+    private void doResolveAllUncached(final Channel channel,
+                                      final String hostname,
                                       final DnsRecord[] additionals,
                                       final Promise<?> originalPromise,
                                       final Promise<List<InetAddress>> promise,
@@ -1147,20 +1252,21 @@ public class DnsNameResolver extends InetNameResolver {
         // to submit multiple Runnable at the end if we are not already on the EventLoop.
         EventExecutor executor = executor();
         if (executor.inEventLoop()) {
-            doResolveAllUncached0(hostname, additionals, originalPromise,
+            doResolveAllUncached0(channel, hostname, additionals, originalPromise,
                                   promise, resolveCache, completeEarlyIfPossible);
         } else {
             executor.execute(new Runnable() {
                 @Override
                 public void run() {
-                    doResolveAllUncached0(hostname, additionals, originalPromise,
+                    doResolveAllUncached0(channel, hostname, additionals, originalPromise,
                                           promise, resolveCache, completeEarlyIfPossible);
                 }
             });
         }
     }
 
-    private void doResolveAllUncached0(final String hostname,
+    private void doResolveAllUncached0(final Channel channel,
+                                       final String hostname,
                                        final DnsRecord[] additionals,
                                        final Promise<?> originalPromise,
                                        final Promise<List<InetAddress>> promise,
@@ -1185,7 +1291,7 @@ public class DnsNameResolver extends InetNameResolver {
                                 // the remote server be overloaded for some short amount of time or because
                                 // UDP packets were dropped on the floor. In this case lets try to just do the
                                 // query explicit and don't cascade this possible temporary failure.
-                                resolveNow(hostname, additionals, originalPromise, promise,
+                                resolveNow(channel, hostname, additionals, originalPromise, promise,
                                         resolveCache, completeEarlyIfPossible);
                             } else {
                                 promise.setFailure(cause);
@@ -1205,10 +1311,12 @@ public class DnsNameResolver extends InetNameResolver {
                 });
             }
         }
-        resolveNow(hostname, additionals, originalPromise, promise, resolveCache, completeEarlyIfPossible);
+        resolveNow(channel, hostname, additionals, originalPromise, promise,
+                resolveCache, completeEarlyIfPossible);
     }
 
-    private void resolveNow(final String hostname,
+    private void resolveNow(final Channel channel,
+                            final String hostname,
                             final DnsRecord[] additionals,
                             final Promise<?> originalPromise,
                             final Promise<List<InetAddress>> promise,
@@ -1216,7 +1324,7 @@ public class DnsNameResolver extends InetNameResolver {
                             final boolean completeEarlyIfPossible) {
         final DnsServerAddressStream nameServerAddrs =
                 dnsServerAddressStreamProvider.nameServerAddressStream(hostname);
-        DnsAddressResolveContext ctx = new DnsAddressResolveContext(this, ch, channelReadyPromise,
+        DnsAddressResolveContext ctx = new DnsAddressResolveContext(this, channel,
                 originalPromise, hostname, additionals, nameServerAddrs, maxQueriesPerResolve, resolveCache,
                 authoritativeDnsServerCache, completeEarlyIfPossible);
         ctx.resolve(promise);
@@ -1262,45 +1370,67 @@ public class DnsNameResolver extends InetNameResolver {
      * Sends a DNS query with the specified question using the specified name server list.
      */
     public Future<AddressedEnvelope<DnsResponse, InetSocketAddress>> query(
-            InetSocketAddress nameServerAddr, DnsQuestion question) {
-
-        return doQuery(ch, channelReadyPromise, nameServerAddr, question, NoopDnsQueryLifecycleObserver.INSTANCE,
-                EMPTY_ADDITIONALS, true,
-                ch.eventLoop().<AddressedEnvelope<? extends DnsResponse, InetSocketAddress>>newPromise());
+            final InetSocketAddress nameServerAddr, final DnsQuestion question) {
+        return query(nameServerAddr, question, Collections.<DnsRecord>emptyList());
     }
 
     /**
      * Sends a DNS query with the specified question with additional records using the specified name server list.
      */
     public Future<AddressedEnvelope<DnsResponse, InetSocketAddress>> query(
-            InetSocketAddress nameServerAddr, DnsQuestion question, Iterable<DnsRecord> additionals) {
-
-        return doQuery(ch, channelReadyPromise, nameServerAddr, question, NoopDnsQueryLifecycleObserver.INSTANCE,
-                toArray(additionals, false), true,
-                ch.eventLoop().<AddressedEnvelope<? extends DnsResponse, InetSocketAddress>>newPromise());
+            final InetSocketAddress nameServerAddr, final DnsQuestion question, final Iterable<DnsRecord> additionals) {
+        return query(nameServerAddr, question, additionals,
+                executor().<AddressedEnvelope<? extends DnsResponse, InetSocketAddress>>newPromise());
     }
 
     /**
      * Sends a DNS query with the specified question using the specified name server list.
      */
     public Future<AddressedEnvelope<DnsResponse, InetSocketAddress>> query(
-            InetSocketAddress nameServerAddr, DnsQuestion question,
-            Promise<AddressedEnvelope<? extends DnsResponse, InetSocketAddress>> promise) {
-
-        return doQuery(ch, channelReadyPromise, nameServerAddr, question, NoopDnsQueryLifecycleObserver.INSTANCE,
-                EMPTY_ADDITIONALS, true, promise);
+            final InetSocketAddress nameServerAddr, final DnsQuestion question,
+            final Promise<AddressedEnvelope<? extends DnsResponse, InetSocketAddress>> promise) {
+        return query(nameServerAddr, question, Collections.<DnsRecord>emptyList(), promise);
     }
 
     /**
      * Sends a DNS query with the specified question with additional records using the specified name server list.
      */
     public Future<AddressedEnvelope<DnsResponse, InetSocketAddress>> query(
-            InetSocketAddress nameServerAddr, DnsQuestion question,
-            Iterable<DnsRecord> additionals,
-            Promise<AddressedEnvelope<? extends DnsResponse, InetSocketAddress>> promise) {
+            final InetSocketAddress nameServerAddr, final DnsQuestion question,
+            final Iterable<DnsRecord> additionals,
+            final Promise<AddressedEnvelope<? extends DnsResponse, InetSocketAddress>> promise) {
 
-        return doQuery(ch, channelReadyPromise, nameServerAddr, question, NoopDnsQueryLifecycleObserver.INSTANCE,
-                toArray(additionals, false), true, promise);
+        ChannelFuture f = resolveChannelProvider.nextResolveChannel(promise);
+        final DnsRecord[] additionalsArray = toArray(additionals, false);
+        if (f.isDone()) {
+            if (f.isSuccess()) {
+                return doQuery(f.channel(), nameServerAddr, question,
+                        NoopDnsQueryLifecycleObserver.INSTANCE, additionalsArray,
+                        true, promise);
+            } else {
+                UnknownHostException e = toException(f, question.name(), question, additionalsArray);
+                promise.setFailure(e);
+                return executor().newFailedFuture(e);
+            }
+        } else {
+            final Promise<AddressedEnvelope<DnsResponse, InetSocketAddress>> p = executor().newPromise();
+            f.addListener(new ChannelFutureListener() {
+                @Override
+                public void operationComplete(ChannelFuture f) {
+                    if (f.isSuccess()) {
+                        Future<AddressedEnvelope<DnsResponse, InetSocketAddress>> qf = doQuery(
+                                f.channel(), nameServerAddr, question, NoopDnsQueryLifecycleObserver.INSTANCE,
+                                additionalsArray, true, promise);
+                        PromiseNotifier.cascade(qf, p);
+                    } else {
+                        UnknownHostException e = toException(f, question.name(), question, additionalsArray);
+                        promise.setFailure(e);
+                        p.setFailure(e);
+                    }
+                }
+            });
+            return p;
+        }
     }
 
     /**
@@ -1322,7 +1452,7 @@ public class DnsNameResolver extends InetNameResolver {
     }
 
     final Future<AddressedEnvelope<DnsResponse, InetSocketAddress>> doQuery(
-            Channel channel, Future<? extends Channel> channelReadyFuture,
+            Channel channel,
             InetSocketAddress nameServerAddr, DnsQuestion question,
             final DnsQueryLifecycleObserver queryLifecycleObserver,
             DnsRecord[] additionals, boolean flush,
@@ -1332,7 +1462,7 @@ public class DnsNameResolver extends InetNameResolver {
                 checkNotNull(promise, "promise"));
         final int payloadSize = isOptResourceEnabled() ? maxPayloadSize() : 0;
         try {
-            DnsQueryContext queryContext = new DatagramDnsQueryContext(channel, channelReadyFuture, nameServerAddr,
+            DnsQueryContext queryContext = new DatagramDnsQueryContext(channel, nameServerAddr,
                     queryContextManager, payloadSize, isRecursionDesired(), queryTimeoutMillis(), question, additionals,
                     castPromise, socketBootstrap, retryWithTcpOnTimeout);
             ChannelFuture future = queryContext.writeQuery(flush);
@@ -1352,12 +1482,17 @@ public class DnsNameResolver extends InetNameResolver {
         return dnsServerAddressStreamProvider.nameServerAddressStream(hostname);
     }
 
-    private final class DnsResponseHandler extends ChannelInboundHandlerAdapter {
+    private static final class DnsResponseHandler extends ChannelInboundHandlerAdapter {
 
-        private final Promise<Channel> channelActivePromise;
+        private final DnsQueryContextManager queryContextManager;
 
-        DnsResponseHandler(Promise<Channel> channelActivePromise) {
-            this.channelActivePromise = channelActivePromise;
+        DnsResponseHandler(DnsQueryContextManager queryContextManager) {
+            this.queryContextManager = queryContextManager;
+        }
+
+        @Override
+        public boolean isSharable() {
+            return true;
         }
 
         @Override
@@ -1385,18 +1520,81 @@ public class DnsNameResolver extends InetNameResolver {
         }
 
         @Override
-        public void channelActive(ChannelHandlerContext ctx) throws Exception {
-            super.channelActive(ctx);
-            channelActivePromise.trySuccess(ctx.channel());
-        }
-
-        @Override
         public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
             if (cause instanceof CorruptedFrameException) {
                 logger.debug("{} Unable to decode DNS response: UDP", ctx.channel(), cause);
             } else {
                 logger.warn("{} Unexpected exception: UDP", ctx.channel(), cause);
             }
+        }
+    }
+
+    private interface DnsResolveChannelProvider {
+
+        /**
+         * Return the next {@link ChannelFuture} that contains the {@link Channel} that should be used for resolving
+         * a chain of queries.
+         *
+         * @param resolutionFuture  the {@link Future} that will be notified once th resolution completes.
+         * @return                  the {@link ChannelFuture}
+         */
+        <T> ChannelFuture nextResolveChannel(Future<T> resolutionFuture);
+
+        /**
+         * Close the {@link DnsResolveChannelProvider} and so cleanup resources if needed.
+         */
+        void close();
+    }
+
+    private static ChannelFuture registerOrBind(Bootstrap bootstrap, SocketAddress localAddress) {
+        return localAddress == null ? bootstrap.register() : bootstrap.bind(localAddress);
+    }
+
+    private static final class DnsResolveChannelPerResolverProvider implements DnsResolveChannelProvider {
+
+        private final ChannelFuture resolveChannelFuture;
+
+        DnsResolveChannelPerResolverProvider(Bootstrap bootstrap, SocketAddress localAddress) {
+            resolveChannelFuture = registerOrBind(bootstrap, localAddress);
+        }
+
+        @Override
+        public <T> ChannelFuture nextResolveChannel(Future<T> resolutionFuture) {
+            return resolveChannelFuture;
+        }
+
+        @Override
+        public void close() {
+            resolveChannelFuture.channel().close();
+        }
+    }
+
+    private static final class DnsResolveChannelPerResolutionProvider implements DnsResolveChannelProvider {
+
+        private final Bootstrap bootstrap;
+        private final SocketAddress localAddress;
+
+        DnsResolveChannelPerResolutionProvider(Bootstrap bootstrap, SocketAddress localAddress) {
+            this.bootstrap = bootstrap;
+            this.localAddress = localAddress;
+        }
+
+        @Override
+        public <T> ChannelFuture nextResolveChannel(Future<T> resolutionFuture) {
+            final ChannelFuture f = registerOrBind(bootstrap, localAddress);
+            resolutionFuture.addListener(new FutureListener<T>() {
+                @Override
+                public void operationComplete(Future<T> future) {
+                    // Always just close the Channel once the resolution is considered complete.
+                    f.channel().close();
+                }
+            });
+            return f;
+        }
+
+        @Override
+        public void close() {
+            // NOOP
         }
     }
 }

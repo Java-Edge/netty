@@ -24,6 +24,7 @@ import io.netty.util.internal.ObjectUtil;
 
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.Locale;
 
 /**
  * The version of HTTP or its derived protocols, such as
@@ -34,7 +35,6 @@ public class HttpVersion implements Comparable<HttpVersion> {
 
     private static final Pattern VERSION_PATTERN =
         Pattern.compile("(\\S+)/(\\d+)\\.(\\d+)");
-
     static final String HTTP_1_0_STRING = "HTTP/1.0";
     static final String HTTP_1_1_STRING = "HTTP/1.1";
 
@@ -57,12 +57,17 @@ public class HttpVersion implements Comparable<HttpVersion> {
      * returned.
      */
     public static HttpVersion valueOf(String text) {
+        return valueOf(text, false);
+    }
+
+    static HttpVersion valueOf(String text, boolean strict) {
         ObjectUtil.checkNotNull(text, "text");
 
         // super fast-path
         if (text == HTTP_1_1_STRING) {
             return HTTP_1_1;
-        } else if (text == HTTP_1_0_STRING) {
+        }
+        if (text == HTTP_1_0_STRING) {
             return HTTP_1_0;
         }
 
@@ -82,7 +87,7 @@ public class HttpVersion implements Comparable<HttpVersion> {
         //
         HttpVersion version = version0(text);
         if (version == null) {
-            version = new HttpVersion(text, true);
+            version = new HttpVersion(text, strict, true);
         }
         return version;
     }
@@ -116,19 +121,48 @@ public class HttpVersion implements Comparable<HttpVersion> {
      *        the {@code "Connection"} header is set to {@code "close"} explicitly.
      */
     public HttpVersion(String text, boolean keepAliveDefault) {
-        text = checkNonEmptyAfterTrim(text, "text").toUpperCase();
+        this(text, false, keepAliveDefault);
+    }
 
-        Matcher m = VERSION_PATTERN.matcher(text);
-        if (!m.matches()) {
-            throw new IllegalArgumentException("invalid version format: " + text);
+    HttpVersion(String text, boolean strict, boolean keepAliveDefault) {
+        // toUpperCase() without an explicit Locale uses the JVM default. In Turkish locale
+        // (tr_TR) 'i' uppercases to 'İ' (U+0130), which would corrupt protocol strings such
+        // as "icap/1.0" or any custom HTTP-derived scheme that contains a lowercase 'i'.
+        text = checkNonEmptyAfterTrim(text, "text").toUpperCase(Locale.US);
+
+        if (strict) {
+            // Only single digit major / minor version is allowed.
+            // See
+            //  - https://datatracker.ietf.org/doc/html/rfc7230#section-2.6
+            //  - https://datatracker.ietf.org/doc/html/rfc9110#name-protocol-version
+            if (text.length() != 8 || !text.startsWith("HTTP/") || text.charAt(6) != '.') {
+                throw new IllegalArgumentException("invalid version format: " + text);
+            }
+            protocolName = "HTTP";
+            majorVersion = toDecimal(text.charAt(5));
+            minorVersion = toDecimal(text.charAt(7));
+        } else {
+            Matcher m = VERSION_PATTERN.matcher(text);
+            if (!m.matches()) {
+                throw new IllegalArgumentException("invalid version format: " + text);
+            }
+
+            protocolName = m.group(1);
+            majorVersion = Integer.parseInt(m.group(2));
+            minorVersion = Integer.parseInt(m.group(3));
         }
 
-        protocolName = m.group(1);
-        majorVersion = Integer.parseInt(m.group(2));
-        minorVersion = Integer.parseInt(m.group(3));
         this.text = protocolName + '/' + majorVersion + '.' + minorVersion;
         this.keepAliveDefault = keepAliveDefault;
         bytes = null;
+    }
+
+    private static int toDecimal(final int value) {
+        if (value < '0' || value > '9') {
+            throw new IllegalArgumentException("Invalid version number, only 0-9 (0x30-0x39) allowed," +
+                    " but received a '" + (char) value + "' (0x" + Integer.toHexString(value) + ")");
+        }
+        return value - '0';
     }
 
     /**
@@ -151,7 +185,9 @@ public class HttpVersion implements Comparable<HttpVersion> {
     private HttpVersion(
             String protocolName, int majorVersion, int minorVersion,
             boolean keepAliveDefault, boolean bytes) {
-        protocolName = checkNonEmptyAfterTrim(protocolName, "protocolName").toUpperCase();
+        // See the comment in the (text, strict, keepAliveDefault) constructor for why this needs
+        // an explicit Locale.US: avoids the Turkish-locale 'i' -> 'İ' corruption.
+        protocolName = checkNonEmptyAfterTrim(protocolName, "protocolName").toUpperCase(Locale.US);
 
         for (int i = 0; i < protocolName.length(); i ++) {
             if (Character.isISOControl(protocolName.charAt(i)) ||

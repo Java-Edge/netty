@@ -15,13 +15,23 @@
  */
 package io.netty.handler.codec.http;
 
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.PooledByteBufAllocator;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelOutboundHandlerAdapter;
 import io.netty.channel.embedded.EmbeddedChannel;
+import io.netty.handler.codec.compression.Brotli;
+import io.netty.handler.codec.compression.Zstd;
+import io.netty.handler.flow.FlowControlHandler;
+import io.netty.util.ReferenceCountUtil;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -40,7 +50,7 @@ public class HttpContentDecompressorTest {
                 readCalled.incrementAndGet();
                 ctx.read();
             }
-        }, new HttpContentDecompressor(), new ChannelInboundHandlerAdapter() {
+        }, new HttpContentDecompressor(0), new ChannelInboundHandlerAdapter() {
             @Override
             public void channelRead(ChannelHandlerContext ctx, Object msg) {
                 ctx.fireChannelRead(msg);
@@ -69,5 +79,142 @@ public class HttpContentDecompressorTest {
         // inbound handler.
         assertEquals(2, readCalled.get());
         assertFalse(channel.finishAndReleaseAll());
+    }
+
+    // See https://github.com/netty/netty/issues/15053.
+    @Test
+    public void testFlowControlHandlerEmitsOneMessagePerRead() {
+        final AtomicInteger reads = new AtomicInteger();
+        final AtomicInteger readCompletes = new AtomicInteger();
+        EmbeddedChannel channel = new EmbeddedChannel(
+                new FlowControlHandler(),
+                new HttpContentDecompressor(0),
+                new ChannelInboundHandlerAdapter() {
+                    @Override
+                    public void channelRead(ChannelHandlerContext ctx, Object msg) {
+                        reads.incrementAndGet();
+                        ReferenceCountUtil.release(msg);
+                    }
+
+                    @Override
+                    public void channelReadComplete(ChannelHandlerContext ctx) {
+                        readCompletes.incrementAndGet();
+                    }
+                });
+
+        channel.config().setAutoRead(false);
+
+        HttpResponse response = new DefaultHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK);
+        response.headers().set(HttpHeaderNames.TRANSFER_ENCODING, HttpHeaderValues.CHUNKED);
+
+        assertFalse(channel.writeInbound(response));
+        assertFalse(channel.writeInbound(new DefaultHttpContent(Unpooled.EMPTY_BUFFER)));
+        assertFalse(channel.writeInbound(new DefaultHttpContent(Unpooled.EMPTY_BUFFER)));
+
+        assertEquals(0, reads.get());
+        assertEquals(0, readCompletes.get());
+
+        channel.read();
+        assertEquals(1, reads.get());
+        assertEquals(1, readCompletes.get());
+
+        channel.read();
+        assertEquals(2, reads.get());
+        assertEquals(2, readCompletes.get());
+
+        channel.read();
+        assertEquals(3, reads.get());
+        assertEquals(3, readCompletes.get());
+
+        assertFalse(channel.finishAndReleaseAll());
+    }
+
+    static String[] encodings() {
+        List<String> encodings = new ArrayList<String>();
+        encodings.add("gzip");
+        encodings.add("deflate");
+        if (Brotli.isAvailable()) {
+            encodings.add("br");
+        }
+        if (Zstd.isAvailable()) {
+            encodings.add("zstd");
+        }
+        encodings.add("snappy");
+        return encodings.toArray(new String[0]);
+    }
+
+    @ParameterizedTest
+    @MethodSource("encodings")
+    public void testZipBomb(String encoding) {
+        int chunkSize = 1024 * 1024;
+        int numberOfChunks = 256;
+        int memoryLimit = chunkSize * 128;
+
+        EmbeddedChannel compressionChannel = new EmbeddedChannel(new HttpContentCompressor());
+        DefaultFullHttpRequest req = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.GET, "/");
+        req.headers().set(HttpHeaderNames.ACCEPT_ENCODING, encoding);
+        compressionChannel.writeInbound(req);
+
+        DefaultHttpResponse response = new DefaultHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK);
+        response.headers().set(HttpHeaderNames.TRANSFER_ENCODING, HttpHeaderValues.CHUNKED);
+        compressionChannel.writeOutbound(response);
+
+        for (int i = 0; i < numberOfChunks; i++) {
+            ByteBuf buffer = compressionChannel.alloc().buffer(chunkSize);
+            buffer.writeZero(chunkSize);
+            compressionChannel.writeOutbound(new DefaultHttpContent(buffer));
+        }
+        compressionChannel.writeOutbound(LastHttpContent.EMPTY_LAST_CONTENT);
+        compressionChannel.finish();
+        compressionChannel.releaseInbound();
+
+        ByteBuf compressed = compressionChannel.alloc().buffer();
+        HttpMessage message = null;
+        while (true) {
+            HttpObject obj = compressionChannel.readOutbound();
+            if (obj == null) {
+                break;
+            }
+            if (obj instanceof HttpMessage) {
+                message = (HttpMessage) obj;
+            }
+            if (obj instanceof HttpContent) {
+                HttpContent content = (HttpContent) obj;
+                compressed.writeBytes(content.content());
+                content.release();
+            }
+        }
+
+        PooledByteBufAllocator allocator = new PooledByteBufAllocator(false);
+
+        ZipBombIncomingHandler incomingHandler = new ZipBombIncomingHandler(memoryLimit);
+        EmbeddedChannel decompressChannel = new EmbeddedChannel(new HttpContentDecompressor(0), incomingHandler);
+        decompressChannel.config().setAllocator(allocator);
+        decompressChannel.writeInbound(message);
+        decompressChannel.writeInbound(new DefaultLastHttpContent(compressed));
+
+        assertEquals((long) chunkSize * numberOfChunks, incomingHandler.total);
+    }
+
+    private static final class ZipBombIncomingHandler extends ChannelInboundHandlerAdapter {
+        final int memoryLimit;
+        long total;
+
+        ZipBombIncomingHandler(int memoryLimit) {
+            this.memoryLimit = memoryLimit;
+        }
+
+        @Override
+        public void channelRead(ChannelHandlerContext ctx, Object msg) {
+            PooledByteBufAllocator allocator = (PooledByteBufAllocator) ctx.alloc();
+            assertTrue(allocator.metric().usedHeapMemory() < memoryLimit);
+            assertTrue(allocator.metric().usedDirectMemory() < memoryLimit);
+
+            if (msg instanceof HttpContent) {
+                HttpContent buf = (HttpContent) msg;
+                total += buf.content().readableBytes();
+                buf.release();
+            }
+        }
     }
 }

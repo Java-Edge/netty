@@ -63,15 +63,17 @@ public final class ReferenceCountedOpenSslClientContext extends ReferenceCounted
                                          KeyManagerFactory keyManagerFactory, Iterable<String> ciphers,
                                          CipherSuiteFilter cipherFilter, ApplicationProtocolConfig apn,
                                          String[] protocols, long sessionCacheSize, long sessionTimeout,
-                                         boolean enableOcsp, String keyStore,
+                                         boolean enableOcsp, String keyStore, String endpointIdentificationAlgorithm,
+                                         ResumptionController resumptionController,
                                          Map.Entry<SslContextOption<?>, Object>... options) throws SSLException {
         super(ciphers, cipherFilter, toNegotiator(apn), SSL.SSL_MODE_CLIENT, keyCertChain,
-              ClientAuth.NONE, protocols, false, enableOcsp, true, options);
+              ClientAuth.NONE, protocols, false, endpointIdentificationAlgorithm, enableOcsp, true,
+                resumptionController, options);
         boolean success = false;
         try {
             sessionContext = newSessionContext(this, ctx, engineMap, trustCertCollection, trustManagerFactory,
                                                keyCertChain, key, keyPassword, keyManagerFactory, keyStore,
-                                               sessionCacheSize, sessionTimeout);
+                                               sessionCacheSize, sessionTimeout, resumptionController);
             success = true;
         } finally {
             if (!success) {
@@ -91,7 +93,8 @@ public final class ReferenceCountedOpenSslClientContext extends ReferenceCounted
                                                    TrustManagerFactory trustManagerFactory,
                                                    X509Certificate[] keyCertChain, PrivateKey key,
                                                    String keyPassword, KeyManagerFactory keyManagerFactory,
-                                                   String keyStore, long sessionCacheSize, long sessionTimeout)
+                                                   String keyStore, long sessionCacheSize, long sessionTimeout,
+                                                   ResumptionController resumptionController)
             throws SSLException {
         if (key == null && keyCertChain != null || key != null && keyCertChain == null) {
             throw new IllegalArgumentException(
@@ -126,7 +129,8 @@ public final class ReferenceCountedOpenSslClientContext extends ReferenceCounted
                     }
 
                     if (keyMaterialProvider != null) {
-                        OpenSslKeyMaterialManager materialManager = new OpenSslKeyMaterialManager(keyMaterialProvider);
+                        OpenSslKeyMaterialManager materialManager =
+                                new OpenSslKeyMaterialManager(keyMaterialProvider, thiz.hasTmpDhKeys);
                         SSLContext.setCertificateCallback(ctx, new OpenSslClientCertificateCallback(
                                 engineMap, materialManager));
                     }
@@ -151,7 +155,8 @@ public final class ReferenceCountedOpenSslClientContext extends ReferenceCounted
                             TrustManagerFactory.getDefaultAlgorithm());
                     trustManagerFactory.init((KeyStore) null);
                 }
-                final X509TrustManager manager = chooseTrustManager(trustManagerFactory.getTrustManagers());
+                final X509TrustManager manager = chooseTrustManager(
+                        trustManagerFactory.getTrustManagers(), resumptionController);
 
                 // IMPORTANT: The callbacks set for verification must be static to prevent memory leak as
                 //            otherwise the context can never be collected. This is because the JNI code holds

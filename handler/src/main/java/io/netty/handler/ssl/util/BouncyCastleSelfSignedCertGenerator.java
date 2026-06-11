@@ -21,14 +21,12 @@ import org.bouncycastle.cert.X509CertificateHolder;
 import org.bouncycastle.cert.X509v3CertificateBuilder;
 import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
 import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder;
-import org.bouncycastle.jce.provider.BouncyCastleProvider;
 import org.bouncycastle.operator.ContentSigner;
 import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
 
 import java.math.BigInteger;
 import java.security.KeyPair;
 import java.security.PrivateKey;
-import java.security.Provider;
 import java.security.SecureRandom;
 import java.security.cert.X509Certificate;
 import java.util.Date;
@@ -39,9 +37,6 @@ import static io.netty.handler.ssl.util.SelfSignedCertificate.newSelfSignedCerti
  * Generates a self-signed certificate using <a href="https://www.bouncycastle.org/">Bouncy Castle</a>.
  */
 final class BouncyCastleSelfSignedCertGenerator {
-
-    private static final Provider PROVIDER = new BouncyCastleProvider();
-
     static String[] generate(String fqdn, KeyPair keypair, SecureRandom random, Date notBefore, Date notAfter,
                              String algorithm) throws Exception {
         PrivateKey key = keypair.getPrivate();
@@ -54,7 +49,9 @@ final class BouncyCastleSelfSignedCertGenerator {
         ContentSigner signer = new JcaContentSignerBuilder(
                 algorithm.equalsIgnoreCase("EC") ? "SHA256withECDSA" : "SHA256WithRSAEncryption").build(key);
         X509CertificateHolder certHolder = builder.build(signer);
-        X509Certificate cert = new JcaX509CertificateConverter().setProvider(PROVIDER).getCertificate(certHolder);
+        X509Certificate cert = new JcaX509CertificateConverter()
+                .setProvider(BouncyCastleUtil.getBcProviderJce())
+                .getCertificate(certHolder);
         cert.verify(keypair.getPublic());
 
         return newSelfSignedCertificate(fqdn, key, cert);

@@ -27,6 +27,7 @@ import io.netty.channel.EventLoopGroup;
 import io.netty.channel.local.LocalAddress;
 import io.netty.channel.local.LocalChannel;
 import io.netty.channel.local.LocalServerChannel;
+import io.netty.handler.ssl.util.CachedSelfSignedCertificate;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import io.netty.handler.ssl.util.SelfSignedCertificate;
 import io.netty.handler.ssl.util.SimpleTrustManagerFactory;
@@ -34,6 +35,7 @@ import io.netty.util.ReferenceCountUtil;
 import io.netty.util.concurrent.Promise;
 import io.netty.util.internal.EmptyArrays;
 import io.netty.util.internal.ThrowableUtil;
+import org.mockito.Mockito;
 
 import javax.net.ssl.ExtendedSSLSession;
 import javax.net.ssl.KeyManager;
@@ -63,6 +65,7 @@ import java.security.UnrecoverableKeyException;
 import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 
@@ -81,7 +84,7 @@ final class SniClientJava8TestUtil {
     static void testSniClient(SslProvider sslClientProvider, SslProvider sslServerProvider, final boolean match)
             throws Exception {
         final String sniHost = "sni.netty.io";
-        SelfSignedCertificate cert = new SelfSignedCertificate();
+        SelfSignedCertificate cert = CachedSelfSignedCertificate.getCachedCertificate();
         LocalAddress address = new LocalAddress("test");
         EventLoopGroup group = new DefaultEventLoopGroup(1);
         SslContext sslServerContext = null;
@@ -163,8 +166,6 @@ final class SniClientJava8TestUtil {
 
             ReferenceCountUtil.release(sslServerContext);
             ReferenceCountUtil.release(sslClientContext);
-
-            cert.delete();
 
             group.shutdownGracefully();
         }
@@ -345,5 +346,13 @@ final class SniClientJava8TestUtil {
                 }
             }, factory.getProvider(), factory.getAlgorithm());
         }
+    }
+
+    static SSLSession mockSSLSessionWithSNIHostNameAndPeerHost(String hostname) {
+        ExtendedSSLSession session = Mockito.mock(ExtendedSSLSession.class);
+        SNIServerName sniName = new SNIHostName(hostname);
+        Mockito.when(session.getRequestedServerNames()).thenReturn(Arrays.asList(sniName));
+        Mockito.when(session.getPeerHost()).thenReturn(hostname);
+        return session;
     }
 }

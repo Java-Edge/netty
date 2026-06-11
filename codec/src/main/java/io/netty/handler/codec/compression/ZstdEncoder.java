@@ -28,14 +28,21 @@ import static io.netty.handler.codec.compression.ZstdConstants.DEFAULT_COMPRESSI
 import static io.netty.handler.codec.compression.ZstdConstants.MIN_COMPRESSION_LEVEL;
 import static io.netty.handler.codec.compression.ZstdConstants.MAX_COMPRESSION_LEVEL;
 import static io.netty.handler.codec.compression.ZstdConstants.DEFAULT_BLOCK_SIZE;
-import static io.netty.handler.codec.compression.ZstdConstants.MAX_BLOCK_SIZE;
+import static io.netty.handler.codec.compression.ZstdConstants.DEFAULT_MAX_ENCODE_SIZE;
 
 /**
  *  Compresses a {@link ByteBuf} using the Zstandard algorithm.
  *  See <a href="https://facebook.github.io/zstd">Zstandard</a>.
  */
 public final class ZstdEncoder extends MessageToByteEncoder<ByteBuf> {
-
+    // Don't use static here as we want to still allow to load the classes.
+    {
+        try {
+            io.netty.handler.codec.compression.Zstd.ensureAvailability();
+        } catch (Throwable throwable) {
+            throw new ExceptionInInitializerError(throwable);
+        }
+    }
     private final int blockSize;
     private final int compressionLevel;
     private final int maxEncodeSize;
@@ -49,7 +56,7 @@ public final class ZstdEncoder extends MessageToByteEncoder<ByteBuf> {
      * please use {@link ZstdEncoder(int,int)} constructor
      */
     public ZstdEncoder() {
-        this(DEFAULT_COMPRESSION_LEVEL, DEFAULT_BLOCK_SIZE, MAX_BLOCK_SIZE);
+        this(DEFAULT_COMPRESSION_LEVEL, DEFAULT_BLOCK_SIZE, DEFAULT_MAX_ENCODE_SIZE);
     }
 
     /**
@@ -58,7 +65,7 @@ public final class ZstdEncoder extends MessageToByteEncoder<ByteBuf> {
      *            specifies the level of the compression
      */
     public ZstdEncoder(int compressionLevel) {
-        this(compressionLevel, DEFAULT_BLOCK_SIZE, MAX_BLOCK_SIZE);
+        this(compressionLevel, DEFAULT_BLOCK_SIZE, DEFAULT_MAX_ENCODE_SIZE);
     }
 
     /**
@@ -106,7 +113,9 @@ public final class ZstdEncoder extends MessageToByteEncoder<ByteBuf> {
         while (remaining > 0) {
             int curSize = Math.min(blockSize, remaining);
             remaining -= curSize;
-            bufferSize += Zstd.compressBound(curSize);
+            // calculate the max compressed size with Zstd.compressBound since
+            // it returns the maximum size of the compressed data
+            bufferSize = Math.max(bufferSize, Zstd.compressBound(curSize));
         }
 
         if (bufferSize > maxEncodeSize || 0 > bufferSize) {
@@ -133,6 +142,11 @@ public final class ZstdEncoder extends MessageToByteEncoder<ByteBuf> {
             if (!buffer.isWritable()) {
                 flushBufferedData(out);
             }
+        }
+        // return the remaining data in the buffer
+        // when buffer size is smaller than the block size
+        if (buffer.isReadable()) {
+            flushBufferedData(out);
         }
     }
 

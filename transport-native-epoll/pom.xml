@@ -19,7 +19,7 @@
   <parent>
     <groupId>io.netty</groupId>
     <artifactId>netty-parent</artifactId>
-    <version>4.1.108.Final-SNAPSHOT</version>
+    <version>4.1.136.Final-SNAPSHOT</version>
   </parent>
   <artifactId>netty-transport-native-epoll</artifactId>
 
@@ -39,7 +39,7 @@
     <unix.common.include.unpacked.dir>${unix.common.lib.dir}/META-INF/native/include</unix.common.include.unpacked.dir>
     <jni.compiler.args.cflags>CFLAGS=-O2 -pipe -Werror -fno-omit-frame-pointer -Wunused-variable -fvisibility=hidden -D_FORTIFY_SOURCE=2 -ffunction-sections -fdata-sections -I${unix.common.include.unpacked.dir}</jni.compiler.args.cflags>
     <jni.compiler.args.ldflags>LDFLAGS=-Wl,-z,relro -Wl,-z,now -Wl,--as-needed -Wl,--gc-sections -L${unix.common.lib.unpacked.dir}</jni.compiler.args.ldflags>
-    <jni.compiler.args.libs>LIBS=-Wl,--whole-archive -l${unix.common.lib.name} -Wl,--no-whole-archive -ldl</jni.compiler.args.libs>
+    <jni.compiler.args.libs>LIBS=-Wl,--whole-archive -l${unix.common.lib.name} -Wl,--no-whole-archive -ldl -lrt</jni.compiler.args.libs>
     <nativeSourceDirectory>${project.basedir}/src/main/c</nativeSourceDirectory>
     <skipTests>true</skipTests>
     <japicmp.skip>true</japicmp.skip>
@@ -174,6 +174,27 @@
             </executions>
           </plugin>
           <plugin>
+            <groupId>org.apache.felix</groupId>
+            <artifactId>maven-bundle-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>native-manifest</id>
+                <phase>process-classes</phase>
+                <goals>
+                  <goal>manifest</goal>
+                </goals>
+                <configuration>
+                  <instructions>
+                    <Bundle-NativeCode>META-INF/native/libnetty_transport_native_epoll_${os.detected.arch}.so; osname=Linux; processor=${os.detected.arch},*</Bundle-NativeCode>
+                    <Bundle-SymbolicName>${maven-symbolicname}.${jni.classifier}</Bundle-SymbolicName>
+                    <Fragment-Host>io.netty.transport-classes-epoll</Fragment-Host>
+                  </instructions>
+                  <manifestLocation>${project.build.directory}/${jni.classifier}</manifestLocation>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
             <artifactId>maven-jar-plugin</artifactId>
             <executions>
               <!-- Generate the JAR that contains the native library in it. -->
@@ -189,12 +210,10 @@
                       <addDefaultSpecificationEntries>true</addDefaultSpecificationEntries>
                     </manifest>
                     <manifestEntries>
-                      <Bundle-NativeCode>META-INF/native/libnetty_transport_native_epoll_${os.detected.arch}.so; osname=Linux; processor=${os.detected.arch},*</Bundle-NativeCode>
-                      <Fragment-Host>io.netty.transport-classes-epoll</Fragment-Host>
                       <Automatic-Module-Name>${javaModuleName}</Automatic-Module-Name>
                     </manifestEntries>
                     <index>true</index>
-                    <manifestFile>${project.build.outputDirectory}/META-INF/MANIFEST.MF</manifestFile>
+                    <manifestFile>${project.build.directory}/${jni.classifier}/MANIFEST.MF</manifestFile>
                   </archive>
                   <classifier>${jni.classifier}</classifier>
                 </configuration>
@@ -328,6 +347,27 @@
             </executions>
           </plugin>
           <plugin>
+            <groupId>org.apache.felix</groupId>
+            <artifactId>maven-bundle-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>native-manifest</id>
+                <phase>process-classes</phase>
+                <goals>
+                  <goal>manifest</goal>
+                </goals>
+                <configuration>
+                  <instructions>
+                    <Bundle-NativeCode>META-INF/native/libnetty_transport_native_epoll_aarch_64.so; osname=Linux; processor=aarch64,*</Bundle-NativeCode>
+                    <Bundle-SymbolicName>${maven-symbolicname}.${jni.classifier}</Bundle-SymbolicName>
+                    <Fragment-Host>io.netty.transport-classes-epoll</Fragment-Host>
+                  </instructions>
+                  <manifestLocation>${project.build.directory}/${jni.classifier}</manifestLocation>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
             <artifactId>maven-jar-plugin</artifactId>
             <executions>
               <!-- Generate the JAR that contains the native library in it. -->
@@ -343,12 +383,10 @@
                       <addDefaultSpecificationEntries>true</addDefaultSpecificationEntries>
                     </manifest>
                     <manifestEntries>
-                      <Bundle-NativeCode>META-INF/native/libnetty_transport_native_epoll_aarch_64.so; osname=Linux; processor=aarch64,*</Bundle-NativeCode>
-                      <Fragment-Host>io.netty.transport-classes-epoll</Fragment-Host>
                       <Automatic-Module-Name>${javaModuleName}</Automatic-Module-Name>
                     </manifestEntries>
                     <index>true</index>
-                    <manifestFile>${project.build.outputDirectory}/META-INF/MANIFEST.MF</manifestFile>
+                    <manifestFile>${project.build.directory}/${jni.classifier}/MANIFEST.MF</manifestFile>
                   </archive>
                   <classifier>${jni.classifier}</classifier>
                 </configuration>
@@ -488,6 +526,27 @@
             </executions>
           </plugin>
           <plugin>
+            <groupId>org.apache.felix</groupId>
+            <artifactId>maven-bundle-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>native-manifest</id>
+                <phase>process-classes</phase>
+                <goals>
+                  <goal>manifest</goal>
+                </goals>
+                <configuration>
+                  <instructions>
+                    <Bundle-NativeCode>META-INF/native/libnetty_transport_native_epoll_riscv64.so; osname=Linux; processor=riscv64,*</Bundle-NativeCode>
+                    <Bundle-SymbolicName>${maven-symbolicname}.${jni.classifier}</Bundle-SymbolicName>
+                    <Fragment-Host>io.netty.transport-classes-epoll</Fragment-Host>
+                  </instructions>
+                  <manifestLocation>${project.build.directory}/${jni.classifier}</manifestLocation>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
             <artifactId>maven-jar-plugin</artifactId>
             <executions>
               <!-- Generate the JAR that contains the native library in it. -->
@@ -503,12 +562,10 @@
                       <addDefaultSpecificationEntries>true</addDefaultSpecificationEntries>
                     </manifest>
                     <manifestEntries>
-                      <Bundle-NativeCode>META-INF/native/libnetty_transport_native_epoll_riscv64.so; osname=Linux; processor=riscv64,*</Bundle-NativeCode>
-                      <Fragment-Host>io.netty.transport-classes-epoll</Fragment-Host>
                       <Automatic-Module-Name>${javaModuleName}</Automatic-Module-Name>
                     </manifestEntries>
                     <index>true</index>
-                    <manifestFile>${project.build.outputDirectory}/META-INF/MANIFEST.MF</manifestFile>
+                    <manifestFile>${project.build.directory}/${jni.classifier}/MANIFEST.MF</manifestFile>
                   </archive>
                   <classifier>${jni.classifier}</classifier>
                 </configuration>
@@ -531,6 +588,12 @@
           <optional>true</optional>
         </dependency>
       </dependencies>
+    </profile>
+    <profile>
+      <id>oss-fuzz</id>
+      <properties>
+        <jni.compiler.args.cflags>CFLAGS=${env.CFLAGS} -I${unix.common.include.unpacked.dir}</jni.compiler.args.cflags>
+      </properties>
     </profile>
   </profiles>
 
@@ -589,6 +652,26 @@
       <artifactId>bcpkix-jdk15on</artifactId>
       <optional>true</optional>
     </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-api</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-engine</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-params</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.assertj</groupId>
+      <artifactId>assertj-core</artifactId>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
 
@@ -615,6 +698,18 @@
       <plugin>
         <artifactId>maven-jar-plugin</artifactId>
         <executions>
+          <!-- We must generate a -javadoc JAR file to publish on Maven Central -->
+          <execution>
+            <id>empty-javadoc-jar</id>
+            <phase>package</phase>
+            <goals>
+              <goal>jar</goal>
+            </goals>
+            <configuration>
+              <classifier>javadoc</classifier>
+              <classesDirectory>${basedir}/javadoc</classesDirectory>
+            </configuration>
+          </execution>
           <!-- Generate the fallback JAR that does not contain the native library. -->
           <execution>
             <id>default-jar</id>

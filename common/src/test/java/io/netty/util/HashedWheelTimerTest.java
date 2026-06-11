@@ -17,6 +17,8 @@ package io.netty.util;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
@@ -277,6 +279,52 @@ public class HashedWheelTimerTest {
         }, Long.MAX_VALUE, TimeUnit.MILLISECONDS);
         assertFalse(latch.await(1, TimeUnit.SECONDS));
         timeout.cancel();
+        timer.stop();
+    }
+
+    @Test
+    @org.junit.jupiter.api.Timeout(value = 3000, unit = TimeUnit.MILLISECONDS)
+    public void testStopTimerCancelsPendingTasks() throws InterruptedException {
+        final Timer timerUnprocessed = new HashedWheelTimer();
+        for (int i = 0; i < 5; i ++) {
+            timerUnprocessed.newTimeout(new TimerTask() {
+                @Override
+                public void run(Timeout timeout) throws Exception {
+                }
+            }, 5, TimeUnit.SECONDS);
+        }
+        Thread.sleep(1000L); // sleep for a second
+
+        for (Timeout timeout : timerUnprocessed.stop()) {
+            assertTrue(timeout.isCancelled(), "All unprocessed tasks should be canceled");
+        }
+    }
+
+    @Test
+    public void testPendingTimeoutsShouldBeCountedCorrectlyWhenTimeoutCancelledWithinGoalTick()
+        throws InterruptedException {
+        final HashedWheelTimer timer = new HashedWheelTimer();
+        final CountDownLatch barrier = new CountDownLatch(1);
+        // A total of 11 timeouts with the same delay are submitted, and they will be processed in the same tick.
+        timer.newTimeout(new TimerTask() {
+            @Override
+            public void run(Timeout timeout) throws Exception {
+                barrier.countDown();
+                Thread.sleep(1000);
+            }
+        }, 200, TimeUnit.MILLISECONDS);
+        List<Timeout> timeouts = new ArrayList<Timeout>();
+        for (int i = 0; i < 10; i++) {
+            timeouts.add(timer.newTimeout(createNoOpTimerTask(), 200, TimeUnit.MILLISECONDS));
+        }
+        barrier.await();
+        // The simulation here is that the timeout has been transferred to a bucket and is canceled before it is
+        // actually expired in the goal tick.
+        for (Timeout timeout : timeouts) {
+            timeout.cancel();
+        }
+        Thread.sleep(2000);
+        assertEquals(0, timer.pendingTimeouts());
         timer.stop();
     }
 

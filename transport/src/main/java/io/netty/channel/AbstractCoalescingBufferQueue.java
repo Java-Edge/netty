@@ -154,9 +154,10 @@ public abstract class AbstractCoalescingBufferQueue {
         ByteBuf toReturn = null;
         ByteBuf entryBuffer = null;
         int originalBytes = bytes;
+        Object entry = null;
         try {
             for (;;) {
-                Object entry = bufAndListenerPairs.poll();
+                entry = bufAndListenerPairs.poll();
                 if (entry == null) {
                     break;
                 }
@@ -181,10 +182,10 @@ public abstract class AbstractCoalescingBufferQueue {
 
                     bytes -= bufferBytes;
                     if (toReturn == null) {
-                        // if there are no more bytes in the queue after this, there's no reason to compose
-                        toReturn = bufferBytes == readableBytes
+                        // if there are no more bytes to read, there's no reason to compose
+                        toReturn = bytes == 0
                                 ? entryBuffer
-                                : composeFirst(alloc, entryBuffer);
+                                : composeFirst(alloc, entryBuffer, bufferBytes + bytes);
                     } else {
                         toReturn = compose(alloc, toReturn, entryBuffer);
                     }
@@ -196,6 +197,18 @@ public abstract class AbstractCoalescingBufferQueue {
                 }
             }
         } catch (Throwable cause) {
+            // Always decrement to keep things consistent. We decrement directly here and not in a finally-block
+            // to ensure that the state is consistent even if it would be accessed via a listener that is
+            // attached to the promise that we fail below.
+            decrementReadableBytes(originalBytes - bytes);
+
+            // Poll the next element if it's a listener that belongs to the ByteBuf.
+            entry = bufAndListenerPairs.peek();
+            if (entry instanceof ChannelFutureListener) {
+                aggregatePromise.addListener((ChannelFutureListener) entry);
+                bufAndListenerPairs.poll();
+            }
+
             safeRelease(entryBuffer);
             safeRelease(toReturn);
             aggregatePromise.setFailure(cause);
@@ -333,7 +346,21 @@ public abstract class AbstractCoalescingBufferQueue {
     /**
      * Calculate the first {@link ByteBuf} which will be used in subsequent calls to
      * {@link #compose(ByteBufAllocator, ByteBuf, ByteBuf)}.
+     * @param bufferSize the optimal size of the buffer needed for cumulation
+     * @return the first buffer
      */
+    protected ByteBuf composeFirst(ByteBufAllocator allocator, ByteBuf first, int bufferSize) {
+        return composeFirst(allocator, first);
+    }
+
+    /**
+     * Calculate the first {@link ByteBuf} which will be used in subsequent calls to
+     * {@link #compose(ByteBufAllocator, ByteBuf, ByteBuf)}.
+     * This method is deprecated and will be removed in the future. Implementing classes should
+     * override {@link #composeFirst(ByteBufAllocator, ByteBuf, int)} instead.
+     * @deprecated Use {AbstractCoalescingBufferQueue#composeFirst(ByteBufAllocator, ByteBuf, int)}
+     */
+    @Deprecated
     protected ByteBuf composeFirst(ByteBufAllocator allocator, ByteBuf first) {
         return first;
     }

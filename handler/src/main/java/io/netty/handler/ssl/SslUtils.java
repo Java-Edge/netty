@@ -33,6 +33,7 @@ import java.security.KeyManagementException;
 import java.security.NoSuchAlgorithmException;
 import java.security.NoSuchProviderException;
 import java.security.Provider;
+import java.security.SecureRandom;
 import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -239,15 +240,20 @@ final class SslUtils {
         return context;
     }
 
-    static SSLContext getSSLContext(String provider)
+    static SSLContext getSSLContext(Provider provider)
+            throws NoSuchAlgorithmException, KeyManagementException, NoSuchProviderException {
+        return getSSLContext(provider, null);
+    }
+
+    static SSLContext getSSLContext(Provider provider, SecureRandom secureRandom)
             throws NoSuchAlgorithmException, KeyManagementException, NoSuchProviderException {
         final SSLContext context;
-        if (StringUtil.isNullOrEmpty(provider)) {
+        if (provider == null) {
             context = SSLContext.getInstance(getTlsVersion());
         } else {
             context = SSLContext.getInstance(getTlsVersion(), provider);
         }
-        context.init(null, new TrustManager[0], null);
+        context.init(null, new TrustManager[0], secureRandom);
         return context;
     }
 
@@ -305,17 +311,21 @@ final class SslUtils {
      * Return how much bytes can be read out of the encrypted data. Be aware that this method will not increase
      * the readerIndex of the given {@link ByteBuf}.
      *
-     * @param   buffer
-     *                  The {@link ByteBuf} to read from.
-     * @return length
-     *                  The length of the encrypted packet that is included in the buffer or
-     *                  {@link #SslUtils#NOT_ENOUGH_DATA} if not enough data is present in the
-     *                  {@link ByteBuf}. This will return {@link SslUtils#NOT_ENCRYPTED} if
-     *                  the given {@link ByteBuf} is not encrypted at all.
+     * @param   buffer      The {@link ByteBuf} to read from.
+     * @param   offset      The offset to start from.
+     * @param   probeSSLv2  {@code true} if the input {@code buffer} might be SSLv2.
+     * @return              The length of the encrypted packet that is included in the buffer or
+     *                      {@link #SslUtils#NOT_ENOUGH_DATA} if not enough data is present in the
+     *                      {@link ByteBuf}. This will return {@link SslUtils#NOT_ENCRYPTED} if
+     *                      the given {@link ByteBuf} is not encrypted at all.
      */
-    static int getEncryptedPacketLength(ByteBuf buffer, int offset) {
+    static int getEncryptedPacketLength(ByteBuf buffer, int offset, boolean probeSSLv2) {
+        assert offset >= buffer.readerIndex();
+        int remaining = buffer.writerIndex() - offset;
+        if (remaining < SSL_RECORD_HEADER_LENGTH) {
+            return NOT_ENOUGH_DATA;
+        }
         int packetLength = 0;
-
         // SSLv3 or TLS - Check ContentType
         boolean tls;
         switch (buffer.getUnsignedByte(offset)) {
@@ -328,6 +338,9 @@ final class SslUtils {
                 break;
             default:
                 // SSLv2 or bad data
+                if (!probeSSLv2) {
+                    return NOT_ENCRYPTED;
+                }
                 tls = false;
         }
 
@@ -343,7 +356,7 @@ final class SslUtils {
                     tls = false;
                 }
             } else if (version == DTLS_1_0 || version == DTLS_1_2 || version == DTLS_1_3) {
-                if (buffer.readableBytes() < offset + DTLS_RECORD_HEADER_LENGTH) {
+                if (remaining < DTLS_RECORD_HEADER_LENGTH) {
                     return NOT_ENOUGH_DATA;
                 }
                 // length is the last 2 bytes in the 13 byte header.
@@ -364,7 +377,8 @@ final class SslUtils {
                 packetLength = headerLength == 2 ?
                         (shortBE(buffer, offset) & 0x7FFF) + 2 : (shortBE(buffer, offset) & 0x3FFF) + 3;
                 if (packetLength <= headerLength) {
-                    return NOT_ENOUGH_DATA;
+                    // If there's no data then consider this package as not encrypted.
+                    return NOT_ENCRYPTED;
                 }
             } else {
                 return NOT_ENCRYPTED;
@@ -417,7 +431,7 @@ final class SslUtils {
         }
 
         // We need to copy 5 bytes into a temporary buffer so we can parse out the packet length easily.
-        ByteBuffer tmp = ByteBuffer.allocate(5);
+        ByteBuffer tmp = ByteBuffer.allocate(SSL_RECORD_HEADER_LENGTH);
 
         do {
             buffer = buffers[offset++].duplicate();
@@ -425,7 +439,7 @@ final class SslUtils {
                 buffer.limit(buffer.position() + tmp.remaining());
             }
             tmp.put(buffer);
-        } while (tmp.hasRemaining());
+        } while (tmp.hasRemaining() && offset < buffers.length);
 
         // Done, flip the buffer so we can read from it.
         tmp.flip();
@@ -433,8 +447,13 @@ final class SslUtils {
     }
 
     private static int getEncryptedPacketLength(ByteBuffer buffer) {
+        int remaining = buffer.remaining();
+        if (remaining < SSL_RECORD_HEADER_LENGTH) {
+            return NOT_ENOUGH_DATA;
+        }
         int packetLength = 0;
         int pos = buffer.position();
+
         // SSLv3 or TLS - Check ContentType
         boolean tls;
         switch (unsignedByte(buffer.get(pos))) {
@@ -475,7 +494,8 @@ final class SslUtils {
                 packetLength = headerLength == 2 ?
                         (shortBE(buffer, pos) & 0x7FFF) + 2 : (shortBE(buffer, pos) & 0x3FFF) + 3;
                 if (packetLength <= headerLength) {
-                    return NOT_ENOUGH_DATA;
+                    // If there's no data then consider this package as not encrypted.
+                    return NOT_ENCRYPTED;
                 }
             } else {
                 return NOT_ENCRYPTED;

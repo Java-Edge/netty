@@ -38,6 +38,7 @@ import io.netty.handler.ssl.SslHandshakeCompletionEvent;
 import io.netty.handler.ssl.SslProvider;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import io.netty.handler.ssl.util.SelfSignedCertificate;
+import io.netty.resolver.dns.DnsNameResolver;
 import io.netty.resolver.dns.DnsNameResolverBuilder;
 import io.netty.resolver.dns.DnsServerAddressStreamProviders;
 import io.netty.util.HashedWheelTimer;
@@ -45,21 +46,21 @@ import io.netty.util.ReferenceCountUtil;
 import io.netty.util.concurrent.DefaultThreadFactory;
 import io.netty.util.concurrent.EventExecutor;
 import io.netty.util.concurrent.FastThreadLocalThread;
+import io.netty.util.concurrent.GenericFutureListener;
 import io.netty.util.concurrent.GlobalEventExecutor;
 import io.netty.util.concurrent.ImmediateEventExecutor;
 import io.netty.util.concurrent.ImmediateExecutor;
 import io.netty.util.concurrent.ScheduledFuture;
 import io.netty.util.concurrent.SingleThreadEventExecutor;
 import io.netty.util.internal.Hidden.NettyBlockHoundIntegration;
-import org.hamcrest.Matchers;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
-import org.junit.jupiter.api.condition.DisabledIf;
 import reactor.blockhound.BlockHound;
 import reactor.blockhound.BlockingOperationError;
 import reactor.blockhound.integration.BlockHoundIntegration;
 
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.List;
@@ -74,25 +75,21 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 
 import static io.netty.buffer.Unpooled.wrappedBuffer;
-import static org.hamcrest.MatcherAssert.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
-@DisabledIf("isDisabledIfJavaVersion18OrAbove")
 public class NettyBlockHoundIntegrationTest {
-
-    private static boolean isDisabledIfJavaVersion18OrAbove() {
-        return PlatformDependent.javaVersion() >= 18;
-    }
 
     @BeforeAll
     public static void setUpClass() {
@@ -112,9 +109,12 @@ public class NettyBlockHoundIntegrationTest {
 
     @Test
     public void testBlockingCallsInNettyThreads() throws Exception {
-        final FutureTask<Void> future = new FutureTask<>(() -> {
-            Thread.sleep(0);
-            return null;
+        final FutureTask<Void> future = new FutureTask<>(new Callable<Void>() {
+            @Override
+            public Void call() throws Exception {
+                Thread.sleep(0);
+                return null;
+            }
         });
         GlobalEventExecutor.INSTANCE.execute(future);
 
@@ -122,7 +122,7 @@ public class NettyBlockHoundIntegrationTest {
             future.get(5, TimeUnit.SECONDS);
             fail("Expected an exception due to a blocking call but none was thrown");
         } catch (ExecutionException e) {
-            assertThat(e.getCause(), Matchers.instanceOf(BlockingOperationError.class));
+            assertInstanceOf(BlockingOperationError.class, e.getCause());
         }
     }
 
@@ -180,9 +180,16 @@ public class NettyBlockHoundIntegrationTest {
                 };
         taskQueue.emulateContention();
         CountDownLatch latch = new CountDownLatch(1);
-        executor.submit(() -> {
-            executor.execute(() -> { }); // calls addTask
-            latch.countDown();
+        executor.submit(new Runnable() {
+            @Override
+            public void run() {
+                executor.execute(new Runnable() {
+                    @Override
+                    public void run() {
+                    }
+                }); // calls addTask
+                latch.countDown();
+            }
         });
         taskQueue.waitUntilContented();
         taskQueue.removeContention();
@@ -191,9 +198,12 @@ public class NettyBlockHoundIntegrationTest {
 
     @Test
     void permittingBlockingCallsInFastThreadLocalThreadSubclass() throws Exception {
-        final FutureTask<Void> future = new FutureTask<>(() -> {
-            Thread.sleep(0);
-            return null;
+        final FutureTask<Void> future = new FutureTask<>(new Callable<Void>() {
+            @Override
+            public Void call() throws Exception {
+                Thread.sleep(0);
+                return null;
+            }
         });
         FastThreadLocalThread thread = new FastThreadLocalThread(future) {
             @Override
@@ -257,6 +267,7 @@ public class NettyBlockHoundIntegrationTest {
             testHandshakeWithExecutor(executorService, "TLSv1.2");
         } finally {
             executorService.shutdown();
+            assertTrue(executorService.awaitTermination(5, TimeUnit.SECONDS));
         }
     }
 
@@ -268,6 +279,7 @@ public class NettyBlockHoundIntegrationTest {
             testHandshakeWithExecutor(executorService, "TLSv1.3");
         } finally {
             executorService.shutdown();
+            assertTrue(executorService.awaitTermination(5, TimeUnit.SECONDS));
         }
     }
 
@@ -345,8 +357,12 @@ public class NettyBlockHoundIntegrationTest {
                         }
                     })
                     .connect(sc.localAddress())
-                    .addListener((ChannelFutureListener) future ->
-                        future.channel().writeAndFlush(wrappedBuffer(new byte [] { 1, 2, 3, 4 })))
+                    .addListener(new ChannelFutureListener() {
+                        @Override
+                        public void operationComplete(ChannelFuture future) throws Exception {
+                            future.channel().writeAndFlush(wrappedBuffer(new byte[]{1, 2, 3, 4}));
+                        }
+                    })
                     .syncUninterruptibly()
                     .channel();
 
@@ -369,20 +385,23 @@ public class NettyBlockHoundIntegrationTest {
     public void pooledBufferAllocation() throws Exception {
         AtomicLong iterationCounter = new AtomicLong();
         PooledByteBufAllocator allocator = PooledByteBufAllocator.DEFAULT;
-        FutureTask<Void> task = new FutureTask<>(() -> {
-            List<ByteBuf> buffers = new ArrayList<>();
-            long count;
-            do {
-                count = iterationCounter.get();
-            } while (count == 0);
-            for (int i = 0; i < 13; i++) {
-                int size = 8 << i;
-                buffers.add(allocator.ioBuffer(size, size));
+        FutureTask<Void> task = new FutureTask<>(new Callable<Void>() {
+            @Override
+            public Void call() throws Exception {
+                List<ByteBuf> buffers = new ArrayList<>();
+                long count;
+                do {
+                    count = iterationCounter.get();
+                } while (count == 0);
+                for (int i = 0; i < 13; i++) {
+                    int size = 8 << i;
+                    buffers.add(allocator.ioBuffer(size, size));
+                }
+                for (ByteBuf buffer : buffers) {
+                    buffer.release();
+                }
+                return null;
             }
-            for (ByteBuf buffer : buffers) {
-                buffer.release();
-            }
-            return null;
         });
         FastThreadLocalThread thread = new FastThreadLocalThread(task);
         thread.start();
@@ -413,8 +432,49 @@ public class NettyBlockHoundIntegrationTest {
         NioEventLoopGroup group = new NioEventLoopGroup();
         try {
             DnsNameResolverBuilder builder = new DnsNameResolverBuilder(group.next())
-                    .channelFactory(NioDatagramChannel::new);
+                    .datagramChannelFactory(NioDatagramChannel::new);
             doTestParseResolverFilesAllowsBlockingCalls(builder::build);
+        } finally {
+            group.shutdownGracefully();
+        }
+    }
+
+    @Test
+    @Timeout(value = 5000, unit = TimeUnit.MILLISECONDS)
+    public void testDnsNameResolverAllowsBlockingCalls() throws InterruptedException {
+        CountDownLatch latch = new CountDownLatch(1);
+        List<Throwable> error = new ArrayList<>();
+        ThreadFactory threadFactory = new ThreadFactory() {
+            @Override
+            public Thread newThread(Runnable r) {
+                Thread t = new DefaultThreadFactory("test").newThread(r);
+                t.setUncaughtExceptionHandler((t1, e) -> {
+                    error.add(e);
+                    latch.countDown();
+                });
+                return t;
+            }
+        };
+        EventLoopGroup group = new NioEventLoopGroup(1, threadFactory);
+        try (DnsNameResolver resolver = new DnsNameResolverBuilder(group.next())
+                .datagramChannelFactory(NioDatagramChannel::new)
+                .build()) {
+            resolver.resolve("netty.io").addListener(
+                    new GenericFutureListener<io.netty.util.concurrent.Future<? super InetAddress>>() {
+                @Override
+                public void operationComplete(io.netty.util.concurrent.Future<? super InetAddress> future) {
+                    if (!future.isSuccess()) {
+                        error.add(future.cause());
+                    }
+                    latch.countDown();
+                }
+            });
+            latch.await();
+            for (Throwable t : error) {
+                if (t instanceof BlockingOperationError || t.getCause() instanceof BlockingOperationError) {
+                    fail("BlockingOperationError was thrown: " + t);
+                }
+            }
         } finally {
             group.shutdownGracefully();
         }
@@ -438,13 +498,16 @@ public class NettyBlockHoundIntegrationTest {
             CountDownLatch latch = new CountDownLatch(1);
             List<Object> result = new ArrayList<>();
             List<Throwable> error = new ArrayList<>();
-            executor.execute(() -> {
-                try {
-                    result.add(callable.call());
-                } catch (Throwable t) {
-                    error.add(t);
+            executor.execute(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        result.add(callable.call());
+                    } catch (Throwable t) {
+                        error.add(t);
+                    }
+                    latch.countDown();
                 }
-                latch.countDown();
             });
             latch.await();
             assertEquals(0, error.size());

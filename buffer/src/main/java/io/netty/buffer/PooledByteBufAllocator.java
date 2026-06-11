@@ -51,6 +51,7 @@ public class PooledByteBufAllocator extends AbstractByteBufAllocator implements 
     private static final boolean DEFAULT_USE_CACHE_FOR_ALL_THREADS;
     private static final int DEFAULT_DIRECT_MEMORY_CACHE_ALIGNMENT;
     static final int DEFAULT_MAX_CACHED_BYTEBUFFERS_PER_CHUNK;
+    private static final boolean DEFAULT_DISABLE_CACHE_FINALIZERS_FOR_FAST_THREAD_LOCAL_THREADS;
 
     private static final int MIN_PAGE_SIZE = 4096;
     private static final int MAX_CHUNK_SIZE = (int) (((long) Integer.MAX_VALUE + 1) / 2);
@@ -148,6 +149,9 @@ public class PooledByteBufAllocator extends AbstractByteBufAllocator implements 
         DEFAULT_USE_CACHE_FOR_ALL_THREADS = SystemPropertyUtil.getBoolean(
                 "io.netty.allocator.useCacheForAllThreads", false);
 
+        DEFAULT_DISABLE_CACHE_FINALIZERS_FOR_FAST_THREAD_LOCAL_THREADS = SystemPropertyUtil.getBoolean(
+                "io.netty.allocator.disableCacheFinalizersForFastThreadLocalThreads", false);
+
         // Use 1023 by default as we use an ArrayDeque as backing storage which will then allocate an internal array
         // of 1024 elements. Otherwise we would allocate 2048 and only use 1024 which is wasteful.
         DEFAULT_MAX_CACHED_BYTEBUFFERS_PER_CHUNK = SystemPropertyUtil.getInt(
@@ -175,11 +179,13 @@ public class PooledByteBufAllocator extends AbstractByteBufAllocator implements 
             logger.debug("-Dio.netty.allocator.useCacheForAllThreads: {}", DEFAULT_USE_CACHE_FOR_ALL_THREADS);
             logger.debug("-Dio.netty.allocator.maxCachedByteBuffersPerChunk: {}",
                     DEFAULT_MAX_CACHED_BYTEBUFFERS_PER_CHUNK);
+            logger.debug("-Dio.netty.allocator.disableCacheFinalizersForFastThreadLocalThreads: {}",
+                         DEFAULT_DISABLE_CACHE_FINALIZERS_FOR_FAST_THREAD_LOCAL_THREADS);
         }
     }
 
     public static final PooledByteBufAllocator DEFAULT =
-            new PooledByteBufAllocator(PlatformDependent.directBufferPreferred());
+            new PooledByteBufAllocator(!PlatformDependent.isExplicitNoPreferDirect());
 
     private final PoolArena<byte[]>[] heapArenas;
     private final PoolArena<ByteBuffer>[] directArenas;
@@ -397,8 +403,8 @@ public class PooledByteBufAllocator extends AbstractByteBufAllocator implements 
             buf = directArena.allocate(cache, initialCapacity, maxCapacity);
         } else {
             buf = PlatformDependent.hasUnsafe() ?
-                    UnsafeByteBufUtil.newUnsafeDirectByteBuf(this, initialCapacity, maxCapacity) :
-                    new UnpooledDirectByteBuf(this, initialCapacity, maxCapacity);
+                    UnsafeByteBufUtil.newUnsafeDirectByteBuf(this, initialCapacity, maxCapacity, true) :
+                    new UnpooledDirectByteBuf(this, initialCapacity, maxCapacity, true);
         }
 
         return toLeakAwareBuffer(buf);
@@ -430,6 +436,14 @@ public class PooledByteBufAllocator extends AbstractByteBufAllocator implements 
      */
     public static int defaultMaxOrder() {
         return DEFAULT_MAX_ORDER;
+    }
+
+    /**
+     * Default control creation of PoolThreadCache finalizers for FastThreadLocalThreads -
+     * System Property: io.netty.allocator.disableCacheFinalizersForFastThreadLocalThreads - default false
+     */
+    public static boolean defaultDisableCacheFinalizersForFastThreadLocalThreads() {
+        return DEFAULT_DISABLE_CACHE_FINALIZERS_FOR_FAST_THREAD_LOCAL_THREADS;
     }
 
     /**
@@ -524,7 +538,7 @@ public class PooledByteBufAllocator extends AbstractByteBufAllocator implements 
                     executor != null) {
                 final PoolThreadCache cache = new PoolThreadCache(
                         heapArena, directArena, smallCacheSize, normalCacheSize,
-                        DEFAULT_MAX_CACHED_BUFFER_CAPACITY, DEFAULT_CACHE_TRIM_INTERVAL, true);
+                        DEFAULT_MAX_CACHED_BUFFER_CAPACITY, DEFAULT_CACHE_TRIM_INTERVAL, useCacheFinalizers(current));
 
                 if (DEFAULT_CACHE_TRIM_INTERVAL_MILLIS > 0) {
                     if (executor != null) {
@@ -563,6 +577,14 @@ public class PooledByteBufAllocator extends AbstractByteBufAllocator implements 
 
             return minArena;
         }
+    }
+
+    private static boolean useCacheFinalizers(Thread current) {
+        if (!defaultDisableCacheFinalizersForFastThreadLocalThreads()) {
+            return true;
+        }
+        return current instanceof FastThreadLocalThread &&
+               ((FastThreadLocalThread) current).willCleanupFastThreadLocals();
     }
 
     @Override
@@ -617,7 +639,10 @@ public class PooledByteBufAllocator extends AbstractByteBufAllocator implements 
      */
     @Deprecated
     public int numThreadLocalCaches() {
-        PoolArena<?>[] arenas = heapArenas != null ? heapArenas : directArenas;
+        return Math.max(numThreadLocalCaches(heapArenas), numThreadLocalCaches(directArenas));
+    }
+
+    private static int numThreadLocalCaches(PoolArena<?>[] arenas) {
         if (arenas == null) {
             return 0;
         }

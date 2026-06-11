@@ -37,13 +37,20 @@ static jmethodID closedChannelExceptionMethodId = NULL;
  even on platforms where the GNU variant is exposed.
  Note: `strerrbuf` must be initialized to all zeros prior to calling this function.
  XSI or GNU functions do not have such a requirement, but our wrappers do.
+
+ Android exposes the XSI variant by default, see
+ https://cs.android.com/android/platform/superproject/+/android16-release:bionic/libc/include/string.h;l=145?q=string.h
  */
-#if (_POSIX_C_SOURCE >= 200112L || _XOPEN_SOURCE >= 600 || __APPLE__) && ! _GNU_SOURCE
+#if (_POSIX_C_SOURCE >= 200112L || _XOPEN_SOURCE >= 600 || __APPLE__ || __ANDROID__) && ! _GNU_SOURCE
     static inline int strerror_r_xsi(int errnum, char *strerrbuf, size_t buflen) {
         return strerror_r(errnum, strerrbuf, buflen);
     }
 #else
     static inline int strerror_r_xsi(int errnum, char *strerrbuf, size_t buflen) {
+        // Clear errno before calling the GNU variant so we can reliably detect failure.
+        // The GNU strerror_r only sets errno on error; it does not clear a pre-existing value,
+        // so a stale non-zero errno would otherwise cause a false negative here.
+        errno = 0;
         char* tmp = strerror_r(errnum, strerrbuf, buflen);
         if (strerrbuf[0] == '\0') {
             // Our output buffer was not used. Copy from tmp.
@@ -200,7 +207,9 @@ static jint netty_unix_errors_errorEHOSTUNREACH(JNIEnv* env, jclass clazz) {
 }
 
 static jstring netty_unix_errors_strError(JNIEnv* env, jclass clazz, jint error) {
-    return (*env)->NewStringUTF(env, strerror(error));
+    char strerrbuf[256] = {0};
+    strerror_r_xsi(error, strerrbuf, sizeof(strerrbuf));
+    return (*env)->NewStringUTF(env, strerrbuf);
 }
 // JNI Registered Methods End
 

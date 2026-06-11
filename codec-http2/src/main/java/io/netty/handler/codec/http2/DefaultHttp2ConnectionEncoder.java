@@ -22,7 +22,6 @@ import io.netty.channel.ChannelPromise;
 import io.netty.channel.CoalescingBufferQueue;
 import io.netty.handler.codec.http.HttpStatusClass;
 import io.netty.handler.codec.http2.Http2CodecUtil.SimpleChannelPromiseAggregator;
-import io.netty.util.internal.UnstableApi;
 
 import java.util.ArrayDeque;
 import java.util.Queue;
@@ -39,7 +38,6 @@ import static java.lang.Math.min;
 /**
  * Default implementation of {@link Http2ConnectionEncoder}.
  */
-@UnstableApi
 public class DefaultHttp2ConnectionEncoder implements Http2ConnectionEncoder, Http2SettingsReceivedConsumer {
     private final Http2FrameWriter frameWriter;
     private final Http2Connection connection;
@@ -102,7 +100,9 @@ public class DefaultHttp2ConnectionEncoder implements Http2ConnectionEncoder, Ht
         }
 
         Long maxHeaderListSize = settings.maxHeaderListSize();
-        if (maxHeaderListSize != null) {
+        if (maxHeaderListSize != null && !connection.isServer()) {
+            // Servers ignore the MAX_HEADER_LIST_SIZE setting from clients.
+            // It's advisory in spec (RFC 9113 §6.5.2) and best praxis is to ignore it.
             outboundHeaderConfig.maxHeaderListSize(maxHeaderListSize);
         }
 

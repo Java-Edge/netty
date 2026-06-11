@@ -28,7 +28,6 @@ import io.netty.handler.codec.http2.Http2Exception.CompositeStreamException;
 import io.netty.handler.codec.http2.Http2Exception.StreamException;
 import io.netty.util.CharsetUtil;
 import io.netty.util.concurrent.Future;
-import io.netty.util.internal.UnstableApi;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 
@@ -62,7 +61,6 @@ import static java.util.concurrent.TimeUnit.MILLISECONDS;
  * This interface enforces inbound flow control functionality through
  * {@link Http2LocalFlowController}
  */
-@UnstableApi
 public class Http2ConnectionHandler extends ByteToMessageDecoder implements Http2LifecycleManager,
                                                                             ChannelOutboundHandler {
 
@@ -223,6 +221,16 @@ public class Http2ConnectionHandler extends ByteToMessageDecoder implements Http
         public boolean prefaceSent() {
             return true;
         }
+
+        /**
+         * Send the preface if needed.
+         *
+         * @param ctx           the {@link ChannelHandlerContext} to use.
+         * @throws Exception    thrown on error.
+         */
+        public void sendPrefaceIfNeeded(ChannelHandlerContext ctx) throws Exception {
+            // Noop by default.
+        }
     }
 
     private final class PrefaceDecoder extends BaseDecoder {
@@ -233,7 +241,7 @@ public class Http2ConnectionHandler extends ByteToMessageDecoder implements Http
             clientPrefaceString = clientPrefaceString(encoder.connection());
             // This handler was just added to the context. In case it was handled after
             // the connection became active, send the connection preface now.
-            sendPreface(ctx);
+            sendPrefaceIfNeeded(ctx);
         }
 
         @Override
@@ -250,6 +258,10 @@ public class Http2ConnectionHandler extends ByteToMessageDecoder implements Http
                     byteDecoder.decode(ctx, in, out);
                 }
             } catch (Throwable e) {
+                if (byteDecoder != null) {
+                    // Skip all bytes before we report the exception as
+                    in.skipBytes(in.readableBytes());
+                }
                 onError(ctx, false, e);
             }
         }
@@ -257,14 +269,7 @@ public class Http2ConnectionHandler extends ByteToMessageDecoder implements Http
         @Override
         public void channelActive(ChannelHandlerContext ctx) throws Exception {
             // The channel just became active - send the connection preface to the remote endpoint.
-            sendPreface(ctx);
-
-            if (flushPreface) {
-                // As we don't know if any channelReadComplete() events will be triggered at all we need to ensure we
-                // also flush. Otherwise the remote peer might never see the preface / settings frame.
-                // See https://github.com/netty/netty/issues/12089
-                ctx.flush();
-            }
+            sendPrefaceIfNeeded(ctx);
         }
 
         @Override
@@ -348,11 +353,16 @@ public class Http2ConnectionHandler extends ByteToMessageDecoder implements Http
             }
 
             short frameType = in.getUnsignedByte(in.readerIndex() + 3);
-            short flags = in.getUnsignedByte(in.readerIndex() + 4);
-            if (frameType != SETTINGS || (flags & Http2Flags.ACK) != 0) {
+            if (frameType != SETTINGS) {
                 throw connectionError(PROTOCOL_ERROR, "First received frame was not SETTINGS. " +
                                                       "Hex dump for first 5 bytes: %s",
                                       hexDump(in, in.readerIndex(), 5));
+            }
+            short flags = in.getUnsignedByte(in.readerIndex() + 4);
+            if ((flags & Http2Flags.ACK) != 0) {
+                throw connectionError(PROTOCOL_ERROR, "First received frame was SETTINGS frame but had ACK flag set. " +
+                        "Hex dump for first 5 bytes: %s",
+                        hexDump(in, in.readerIndex(), 5));
             }
             return true;
         }
@@ -360,7 +370,8 @@ public class Http2ConnectionHandler extends ByteToMessageDecoder implements Http
         /**
          * Sends the HTTP/2 connection preface upon establishment of the connection, if not already sent.
          */
-        private void sendPreface(ChannelHandlerContext ctx) throws Exception {
+        @Override
+        public void sendPrefaceIfNeeded(ChannelHandlerContext ctx) throws Exception {
             if (prefaceSent || !ctx.channel().isActive()) {
                 return;
             }
@@ -377,11 +388,20 @@ public class Http2ConnectionHandler extends ByteToMessageDecoder implements Http
             encoder.writeSettings(ctx, initialSettings, ctx.newPromise()).addListener(
                     ChannelFutureListener.CLOSE_ON_FAILURE);
 
-            if (isClient) {
-                // If this handler is extended by the user and we directly fire the userEvent from this context then
-                // the user will not see the event. We should fire the event starting with this handler so this class
-                // (and extending classes) have a chance to process the event.
-                userEventTriggered(ctx, Http2ConnectionPrefaceAndSettingsFrameWrittenEvent.INSTANCE);
+            try {
+                if (isClient) {
+                    // If this handler is extended by the user and we directly fire the userEvent from this context then
+                    // the user will not see the event. We should fire the event starting with this handler so this
+                    // class (and extending classes) have a chance to process the event.
+                    userEventTriggered(ctx, Http2ConnectionPrefaceAndSettingsFrameWrittenEvent.INSTANCE);
+                }
+            } finally {
+                if (flushPreface) {
+                    // As we don't know if any channelReadComplete() events will be triggered at all we need to ensure
+                    // we also flush. Otherwise the remote peer might never see the preface / settings frame.
+                    // See https://github.com/netty/netty/issues/12089
+                    ctx.flush();
+                }
             }
         }
     }
@@ -455,13 +475,19 @@ public class Http2ConnectionHandler extends ByteToMessageDecoder implements Http
 
     @Override
     public void bind(ChannelHandlerContext ctx, SocketAddress localAddress, ChannelPromise promise) throws Exception {
-        ctx.bind(localAddress, promise);
+        // Ensure we send the preface before we notify the bind promise as the user might try to write
+        // directly in the listener attached to the promise and we need to ensure the preface is always the first
+        // thing that is written.
+        ctx.bind(localAddress, ctx.newPromise()).addListener(new PrefaceSendListener(ctx, promise));
     }
 
     @Override
     public void connect(ChannelHandlerContext ctx, SocketAddress remoteAddress, SocketAddress localAddress,
                         ChannelPromise promise) throws Exception {
-        ctx.connect(remoteAddress, localAddress, promise);
+        // Ensure we send the preface before we notify the connect promise as the user might try to write
+        // directly in the listener attached to the promise and we need to ensure the preface is always the first
+        // thing that is written.
+        ctx.connect(remoteAddress, localAddress, ctx.newPromise()).addListener(new PrefaceSendListener(ctx, promise));
     }
 
     @Override
@@ -719,7 +745,7 @@ public class Http2ConnectionHandler extends ByteToMessageDecoder implements Http
                 try {
                     stream = encoder.connection().remote().createStream(streamId, true);
                 } catch (Http2Exception e) {
-                    resetUnknownStream(ctx, streamId, http2Ex.error().code(), ctx.newPromise());
+                    encoder().writeRstStream(ctx, streamId, http2Ex.error().code(), ctx.newPromise());
                     return;
                 }
             }
@@ -736,10 +762,10 @@ public class Http2ConnectionHandler extends ByteToMessageDecoder implements Http
 
         if (stream == null) {
             if (!outbound || connection().local().mayHaveCreatedStream(streamId)) {
-                resetUnknownStream(ctx, streamId, http2Ex.error().code(), ctx.newPromise());
+                encoder().writeRstStream(ctx, streamId, http2Ex.error().code(), ctx.newPromise());
             }
         } else {
-            resetStream(ctx, stream, http2Ex.error().code(), ctx.newPromise());
+            encoder().writeRstStream(ctx, streamId, http2Ex.error().code(), ctx.newPromise());
         }
     }
 
@@ -1003,6 +1029,33 @@ public class Http2ConnectionHandler extends ByteToMessageDecoder implements Http
                 ctx.close();
             } else {
                 ctx.close(promise);
+            }
+        }
+    }
+
+    private final class PrefaceSendListener implements ChannelFutureListener {
+        private final ChannelHandlerContext ctx;
+        private final ChannelPromise promise;
+
+        PrefaceSendListener(ChannelHandlerContext ctx, ChannelPromise promise) {
+            this.ctx = ctx;
+            this.promise = promise;
+        }
+
+        @Override
+        public void operationComplete(ChannelFuture f) {
+            if (f.isSuccess()) {
+                try {
+                    if (byteDecoder != null) {
+                        byteDecoder.sendPrefaceIfNeeded(ctx);
+                    }
+                } catch (Throwable e) {
+                    promise.setFailure(e);
+                    return;
+                }
+                promise.setSuccess();
+            } else {
+                promise.setFailure(f.cause());
             }
         }
     }

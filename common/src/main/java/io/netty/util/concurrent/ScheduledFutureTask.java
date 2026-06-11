@@ -80,6 +80,10 @@ final class ScheduledFutureTask<V> extends PromiseTask<V> implements ScheduledFu
         return this;
     }
 
+    long getId() {
+        return id;
+    }
+
     @Override
     protected EventExecutor executor() {
         return super.executor();
@@ -99,6 +103,9 @@ final class ScheduledFutureTask<V> extends PromiseTask<V> implements ScheduledFu
     }
 
     public long delayNanos() {
+        if (deadlineNanos == 0L) {
+            return 0L;
+        }
         return delayNanos(scheduledExecutor().getCurrentTimeNanos());
     }
 
@@ -164,7 +171,7 @@ final class ScheduledFutureTask<V> extends PromiseTask<V> implements ScheduledFu
                             deadlineNanos = scheduledExecutor().getCurrentTimeNanos() - periodNanos;
                         }
                         if (!isCancelled()) {
-                            scheduledExecutor().scheduledTaskQueue().add(this);
+                            scheduledExecutor().scheduleFromEventLoop(this);
                         }
                     }
                 }

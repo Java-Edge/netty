@@ -18,13 +18,14 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.http2.Http2FrameReader.Configuration;
+import io.netty.util.internal.ObjectUtil;
 import io.netty.util.internal.PlatformDependent;
-import io.netty.util.internal.UnstableApi;
 
 import static io.netty.handler.codec.http2.Http2CodecUtil.CONNECTION_STREAM_ID;
 import static io.netty.handler.codec.http2.Http2CodecUtil.DEFAULT_MAX_FRAME_SIZE;
 import static io.netty.handler.codec.http2.Http2CodecUtil.FRAME_HEADER_LENGTH;
 import static io.netty.handler.codec.http2.Http2CodecUtil.INT_FIELD_LENGTH;
+import static io.netty.handler.codec.http2.Http2CodecUtil.MAX_FRAME_SIZE_LOWER_BOUND;
 import static io.netty.handler.codec.http2.Http2CodecUtil.PING_FRAME_PAYLOAD_LENGTH;
 import static io.netty.handler.codec.http2.Http2CodecUtil.PRIORITY_ENTRY_LENGTH;
 import static io.netty.handler.codec.http2.Http2CodecUtil.SETTINGS_INITIAL_WINDOW_SIZE;
@@ -32,6 +33,7 @@ import static io.netty.handler.codec.http2.Http2CodecUtil.SETTING_ENTRY_LENGTH;
 import static io.netty.handler.codec.http2.Http2CodecUtil.headerListSizeExceeded;
 import static io.netty.handler.codec.http2.Http2CodecUtil.isMaxFrameSizeValid;
 import static io.netty.handler.codec.http2.Http2CodecUtil.readUnsignedInt;
+import static io.netty.handler.codec.http2.Http2Error.ENHANCE_YOUR_CALM;
 import static io.netty.handler.codec.http2.Http2Error.FLOW_CONTROL_ERROR;
 import static io.netty.handler.codec.http2.Http2Error.FRAME_SIZE_ERROR;
 import static io.netty.handler.codec.http2.Http2Error.PROTOCOL_ERROR;
@@ -51,8 +53,8 @@ import static io.netty.handler.codec.http2.Http2FrameTypes.WINDOW_UPDATE;
 /**
  * A {@link Http2FrameReader} that supports all frame types defined by the HTTP/2 specification.
  */
-@UnstableApi
 public class DefaultHttp2FrameReader implements Http2FrameReader, Http2FrameSizePolicy, Configuration {
+    private static final int FRAGMENT_THRESHOLD = MAX_FRAME_SIZE_LOWER_BOUND / 2;
     private final Http2HeadersDecoder headersDecoder;
 
     /**
@@ -69,7 +71,8 @@ public class DefaultHttp2FrameReader implements Http2FrameReader, Http2FrameSize
     private Http2Flags flags;
     private int payloadLength;
     private HeadersContinuation headersContinuation;
-    private int maxFrameSize;
+    private int maxFrameSize = DEFAULT_MAX_FRAME_SIZE;
+    private final int maxSmallContinuationFrames;
 
     /**
      * Create a new instance.
@@ -90,8 +93,13 @@ public class DefaultHttp2FrameReader implements Http2FrameReader, Http2FrameSize
     }
 
     public DefaultHttp2FrameReader(Http2HeadersDecoder headersDecoder) {
-        this.headersDecoder = headersDecoder;
-        maxFrameSize = DEFAULT_MAX_FRAME_SIZE;
+        this(headersDecoder, Http2CodecUtil.DEFAULT_MAX_SMALL_CONTINUATION_FRAME);
+    }
+
+    public DefaultHttp2FrameReader(Http2HeadersDecoder headersDecoder, int maxSmallContinuationFrames) {
+        this.headersDecoder = ObjectUtil.checkNotNull(headersDecoder, "headersDecoder");
+        this.maxSmallContinuationFrames = ObjectUtil.checkPositiveOrZero(
+                maxSmallContinuationFrames, "maxSmallContinuationFrames");
     }
 
     @Override
@@ -392,6 +400,12 @@ public class DefaultHttp2FrameReader implements Http2FrameReader, Http2FrameSize
             throw connectionError(PROTOCOL_ERROR, "Continuation stream ID does not match pending headers. "
                     + "Expected %d, but received %d.", headersContinuation.getStreamId(), streamId);
         }
+
+        if (headersContinuation.numSmallFragments() >=  maxSmallContinuationFrames) {
+            throw connectionError(ENHANCE_YOUR_CALM,
+                    "Number of small consecutive continuations frames %d exceeds maximum: %d",
+                    headersContinuation.numSmallFragments(), maxSmallContinuationFrames);
+        }
     }
 
     private void verifyUnknownFrame() throws Http2Exception {
@@ -401,7 +415,6 @@ public class DefaultHttp2FrameReader implements Http2FrameReader, Http2FrameSize
     private void readDataFrame(ChannelHandlerContext ctx, ByteBuf payload,
             Http2FrameListener listener) throws Http2Exception {
         int padding = readPadding(payload);
-        verifyPadding(padding);
 
         // Determine how much data there is to read by removing the trailing
         // padding.
@@ -416,7 +429,6 @@ public class DefaultHttp2FrameReader implements Http2FrameReader, Http2FrameSize
         final int headersStreamId = streamId;
         final Http2Flags headersFlags = flags;
         final int padding = readPadding(payload);
-        verifyPadding(padding);
 
         // The callback that is invoked is different depending on whether priority information
         // is present in the headers frame.
@@ -538,7 +550,6 @@ public class DefaultHttp2FrameReader implements Http2FrameReader, Http2FrameSize
             Http2FrameListener listener) throws Http2Exception {
         final int pushPromiseStreamId = streamId;
         final int padding = readPadding(payload);
-        verifyPadding(padding);
         final int promisedStreamId = readUnsignedInt(payload);
 
         // Create a handler that invokes the listener when the header block is complete.
@@ -622,21 +633,19 @@ public class DefaultHttp2FrameReader implements Http2FrameReader, Http2FrameSize
         return payload.readUnsignedByte() + 1;
     }
 
-    private void verifyPadding(int padding) throws Http2Exception {
-        int len = lengthWithoutTrailingPadding(payloadLength, padding);
-        if (len < 0) {
-            throw connectionError(PROTOCOL_ERROR, "Frame payload too small for padding.");
-        }
-    }
-
     /**
      * The padding parameter consists of the 1 byte pad length field and the trailing padding bytes. This method
      * returns the number of readable bytes without the trailing padding.
      */
-    private static int lengthWithoutTrailingPadding(int readableBytes, int padding) {
-        return padding == 0
-                ? readableBytes
-                : readableBytes - (padding - 1);
+    private static int lengthWithoutTrailingPadding(int readableBytes, int padding) throws Http2Exception {
+        if (padding == 0) {
+            return readableBytes;
+        }
+        int n = readableBytes - (padding - 1);
+        if (n < 0) {
+            throw connectionError(PROTOCOL_ERROR, "Frame payload too small for padding.");
+        }
+        return n;
     }
 
     /**
@@ -651,6 +660,15 @@ public class DefaultHttp2FrameReader implements Http2FrameReader, Http2FrameSize
          * Returns the stream for which headers are currently being processed.
          */
         abstract int getStreamId();
+
+        /**
+         * Return the number of fragments that were used so far.
+         *
+         * @return the number of fragments
+         */
+        final int numSmallFragments() {
+            return builder.numSmallFragments();
+        }
 
         /**
          * Processes the next fragment for the current header block.
@@ -680,6 +698,7 @@ public class DefaultHttp2FrameReader implements Http2FrameReader, Http2FrameSize
      */
     protected class HeadersBlockBuilder {
         private ByteBuf headerBlock;
+        private int numSmallFragments;
 
         /**
          * The local header size maximum has been exceeded while accumulating bytes.
@@ -688,6 +707,15 @@ public class DefaultHttp2FrameReader implements Http2FrameReader, Http2FrameSize
         private void headerSizeExceeded() throws Http2Exception {
             close();
             headerListSizeExceeded(headersDecoder.configuration().maxHeaderListSizeGoAway());
+        }
+
+        /**
+         * Return the number of fragments that was used so far.
+         *
+         * @return number of fragments.
+         */
+        int numSmallFragments() {
+            return numSmallFragments;
         }
 
         /**
@@ -701,6 +729,11 @@ public class DefaultHttp2FrameReader implements Http2FrameReader, Http2FrameSize
          */
         final void addFragment(ByteBuf fragment, int len, ByteBufAllocator alloc,
                 boolean endOfHeaders) throws Http2Exception {
+            if (maxSmallContinuationFrames > 0 && !endOfHeaders && len < FRAGMENT_THRESHOLD) {
+                // Only count of the fragment is not the end of header and if its < 8kb.
+                numSmallFragments++;
+            }
+
             if (headerBlock == null) {
                 if (len > headersDecoder.configuration().maxHeaderListSizeGoAway()) {
                     headerSizeExceeded();

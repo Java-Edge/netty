@@ -17,7 +17,6 @@ package io.netty.handler.codec.dns;
 
 import io.netty.util.internal.PlatformDependent;
 import io.netty.util.internal.StringUtil;
-import io.netty.util.internal.UnstableApi;
 
 import java.net.IDN;
 
@@ -27,7 +26,6 @@ import static io.netty.util.internal.ObjectUtil.checkPositiveOrZero;
 /**
  * A skeletal implementation of {@link DnsRecord}.
  */
-@UnstableApi
 public abstract class AbstractDnsRecord implements DnsRecord {
 
     private final String name;
@@ -131,7 +129,7 @@ public abstract class AbstractDnsRecord implements DnsRecord {
 
         return type().intValue() == that.type().intValue() &&
                dnsClass() == that.dnsClass() &&
-               name().equals(that.name());
+               name().equalsIgnoreCase(that.name());
     }
 
     @Override
@@ -141,7 +139,7 @@ public abstract class AbstractDnsRecord implements DnsRecord {
             return hashCode;
         }
 
-        return this.hashCode = name.hashCode() * 31 + type().intValue() * 31 + dnsClass();
+        return this.hashCode = name.toLowerCase().hashCode() * 31 + type().intValue() * 31 + dnsClass();
     }
 
     @Override

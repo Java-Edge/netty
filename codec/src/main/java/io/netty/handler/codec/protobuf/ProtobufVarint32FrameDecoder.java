@@ -21,8 +21,11 @@ import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.ByteToMessageDecoder;
 import io.netty.handler.codec.CorruptedFrameException;
+import io.netty.handler.codec.TooLongFrameException;
 
 import java.util.List;
+
+import static io.netty.util.internal.ObjectUtil.checkPositive;
 
 /**
  * A decoder that splits the received {@link ByteBuf}s dynamically by the
@@ -42,12 +45,37 @@ import java.util.List;
  */
 public class ProtobufVarint32FrameDecoder extends ByteToMessageDecoder {
 
-    // TODO maxFrameLength + safe skip + fail-fast option
-    //      (just like LengthFieldBasedFrameDecoder)
+    private final int maxFrameLength;
+    private long bytesToDiscard;
+
+    /**
+     * Creates a new instance with no frame length limit.
+     */
+    public ProtobufVarint32FrameDecoder() {
+        this(Integer.MAX_VALUE);
+    }
+
+    /**
+     * Creates a new instance with the specified maximum frame length.
+     *
+     * @param maxFrameLength the maximum length of the frame.
+     *                       If the length exceeds this value,
+     *                       {@link TooLongFrameException} will be thrown.
+     */
+    public ProtobufVarint32FrameDecoder(int maxFrameLength) {
+        this.maxFrameLength = checkPositive(maxFrameLength, "maxFrameLength");
+    }
 
     @Override
     protected void decode(ChannelHandlerContext ctx, ByteBuf in, List<Object> out)
             throws Exception {
+        if (bytesToDiscard > 0) {
+            int localBytesToDiscard = (int) Math.min(bytesToDiscard, in.readableBytes());
+            in.skipBytes(localBytesToDiscard);
+            bytesToDiscard -= localBytesToDiscard;
+            return;
+        }
+
         in.markReaderIndex();
         int preIndex = in.readerIndex();
         int length = readRawVarint32(in);
@@ -56,6 +84,19 @@ public class ProtobufVarint32FrameDecoder extends ByteToMessageDecoder {
         }
         if (length < 0) {
             throw new CorruptedFrameException("negative length: " + length);
+        }
+
+        if (length > maxFrameLength) {
+            long discard = length - in.readableBytes();
+            if (discard <= 0) {
+                in.skipBytes(length);
+            } else {
+                bytesToDiscard = discard;
+                in.skipBytes(in.readableBytes());
+            }
+            throw new TooLongFrameException(
+                    "Frame length exceeds " + maxFrameLength
+                    + ": " + length);
         }
 
         if (in.readableBytes() < length) {
@@ -70,52 +111,73 @@ public class ProtobufVarint32FrameDecoder extends ByteToMessageDecoder {
      *
      * @return decoded int if buffers readerIndex has been forwarded else nonsense value
      */
-    private static int readRawVarint32(ByteBuf buffer) {
+    static int readRawVarint32(ByteBuf buffer) {
+        if (buffer.readableBytes() < 4) {
+            return readRawVarint24(buffer);
+        }
+        int wholeOrMore = buffer.getIntLE(buffer.readerIndex());
+        int firstOneOnStop = ~wholeOrMore & 0x80808080;
+        if (firstOneOnStop == 0) {
+            return readRawVarint40(buffer, wholeOrMore);
+        }
+        int bitsToKeep = Integer.numberOfTrailingZeros(firstOneOnStop) + 1;
+        buffer.skipBytes(bitsToKeep >> 3);
+        int thisVarintMask = firstOneOnStop ^ (firstOneOnStop - 1);
+        int wholeWithContinuations = wholeOrMore & thisVarintMask;
+        // mix them up as per varint spec while dropping the continuation bits:
+        // 0x7F007F isolate the first byte and the third byte dropping the continuation bits
+        // 0x7F007F00 isolate the second byte and the fourth byte dropping the continuation bits
+        // the second and fourth byte are shifted to the right by 1, filling the gaps left by the first and third byte
+        // it means that the first and second bytes now occupy the first 14 bits (7 bits each)
+        // and the third and fourth bytes occupy the next 14 bits (7 bits each), with a gap between the 2s of 2 bytes
+        // and another gap of 2 bytes after the forth and third.
+        wholeWithContinuations = (wholeWithContinuations & 0x7F007F) | ((wholeWithContinuations & 0x7F007F00) >> 1);
+        // 0x3FFF isolate the first 14 bits i.e. the first and second bytes
+        // 0x3FFF0000 isolate the next 14 bits i.e. the third and forth bytes
+        // the third and forth bytes are shifted to the right by 2, filling the gaps left by the first and second bytes
+        return (wholeWithContinuations & 0x3FFF) | ((wholeWithContinuations & 0x3FFF0000) >> 2);
+    }
+
+    private static int readRawVarint40(ByteBuf buffer, int wholeOrMore) {
+        byte lastByte;
+        if (buffer.readableBytes() == 4 || (lastByte = buffer.getByte(buffer.readerIndex() + 4)) < 0) {
+            throw new CorruptedFrameException("malformed varint.");
+        }
+        buffer.skipBytes(5);
+        // add it to wholeOrMore
+        return wholeOrMore & 0x7F |
+               (((wholeOrMore >> 8) & 0x7F) << 7) |
+               (((wholeOrMore >> 16) & 0x7F) << 14) |
+               (((wholeOrMore >> 24) & 0x7F) << 21) |
+               (lastByte << 28);
+    }
+
+    private static int readRawVarint24(ByteBuf buffer) {
         if (!buffer.isReadable()) {
             return 0;
         }
         buffer.markReaderIndex();
+
         byte tmp = buffer.readByte();
         if (tmp >= 0) {
             return tmp;
-        } else {
-            int result = tmp & 127;
-            if (!buffer.isReadable()) {
-                buffer.resetReaderIndex();
-                return 0;
-            }
-            if ((tmp = buffer.readByte()) >= 0) {
-                result |= tmp << 7;
-            } else {
-                result |= (tmp & 127) << 7;
-                if (!buffer.isReadable()) {
-                    buffer.resetReaderIndex();
-                    return 0;
-                }
-                if ((tmp = buffer.readByte()) >= 0) {
-                    result |= tmp << 14;
-                } else {
-                    result |= (tmp & 127) << 14;
-                    if (!buffer.isReadable()) {
-                        buffer.resetReaderIndex();
-                        return 0;
-                    }
-                    if ((tmp = buffer.readByte()) >= 0) {
-                        result |= tmp << 21;
-                    } else {
-                        result |= (tmp & 127) << 21;
-                        if (!buffer.isReadable()) {
-                            buffer.resetReaderIndex();
-                            return 0;
-                        }
-                        result |= (tmp = buffer.readByte()) << 28;
-                        if (tmp < 0) {
-                            throw new CorruptedFrameException("malformed varint.");
-                        }
-                    }
-                }
-            }
-            return result;
         }
+        int result = tmp & 127;
+        if (!buffer.isReadable()) {
+            buffer.resetReaderIndex();
+            return 0;
+        }
+        if ((tmp = buffer.readByte()) >= 0) {
+            return result | tmp << 7;
+        }
+        result |= (tmp & 127) << 7;
+        if (!buffer.isReadable()) {
+            buffer.resetReaderIndex();
+            return 0;
+        }
+        if ((tmp = buffer.readByte()) >= 0) {
+            return result | tmp << 14;
+        }
+        return result | (tmp & 127) << 14;
     }
 }

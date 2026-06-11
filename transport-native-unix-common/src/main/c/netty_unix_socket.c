@@ -133,11 +133,23 @@ done:
     return obj;
 }
 
-static jobject createDomainDatagramSocketAddress(JNIEnv* env, const struct sockaddr_storage* addr, int len, jobject local) {
+static int domainSocketPathLength(const struct sockaddr_un* s, const socklen_t addrlen) {
+#ifdef __linux__
+    // Linux supports abstract domain sockets so we need to handle it.
+    // https://man7.org/linux/man-pages/man7/unix.7.html
+    if (addrlen >= sizeof(sa_family_t) && s->sun_path[0] == '\0') {
+       // This is an abstract domain socket address
+       return (addrlen - sizeof(sa_family_t));
+    }
+#endif
+    return strlen(s->sun_path);
+}
+
+static jobject createDomainDatagramSocketAddress(JNIEnv* env, const struct sockaddr_storage* addr, const socklen_t addrlen, int len, jobject local) {
     jclass domainDatagramSocketAddressClass = NULL;
     jobject obj  = NULL;
     struct sockaddr_un* s = (struct sockaddr_un*) addr;
-    int pathLength = strlen(s->sun_path);
+    int pathLength = domainSocketPathLength(s, addrlen);
     jbyteArray pathBytes = (*env)->NewByteArray(env, pathLength);
     if (pathBytes == NULL) {
         return NULL;
@@ -157,9 +169,9 @@ done:
     return obj;
 }
 
-static jbyteArray netty_unix_socket_createDomainSocketAddressArray(JNIEnv* env, const struct sockaddr_storage* addr) {
+static jbyteArray netty_unix_socket_createDomainSocketAddressArray(JNIEnv* env, const struct sockaddr_storage* addr, const socklen_t addrlen) {
     struct sockaddr_un* s = (struct sockaddr_un*) addr;
-    int pathLength = strlen(s->sun_path);
+    int pathLength = domainSocketPathLength(s, addrlen);
     jbyteArray pathBytes = (*env)->NewByteArray(env, pathLength);
     if (pathBytes == NULL) {
         return NULL;
@@ -384,6 +396,9 @@ static jint _sendToDomainSocket(JNIEnv* env, jint fd, void* buffer, jint pos, ji
     addr.sun_family = AF_UNIX;
 
     jbyte* socket_path = (*env)->GetByteArrayElements(env, socketPath, 0);
+    if (socket_path == NULL) {
+        return -1;
+    }
     socket_path_len = (*env)->GetArrayLength(env, socketPath);
     if (socket_path_len > sizeof(addr.sun_path)) {
         socket_path_len = sizeof(addr.sun_path);
@@ -443,7 +458,7 @@ static jobject _recvFromDomainSocket(JNIEnv* env, jint fd, void* buffer, jint po
     int err;
 
     do {
-        bzero(&addr, sizeof(addr)); // Zap addr so we can strlen(addr.sun_path) later. See unix(4).
+        memset(&addr, 0, sizeof(addr)); // Zap addr so we can strlen(addr.sun_path) later. See unix(4).
         res = recvfrom(fd, buffer + pos, (size_t) (limit - pos), 0, (struct sockaddr*) &addr, &addrlen);
         // Keep on reading if it was interrupted
     } while (res == -1 && ((err = errno) == EINTR));
@@ -461,7 +476,7 @@ static jobject _recvFromDomainSocket(JNIEnv* env, jint fd, void* buffer, jint po
         return NULL;
     }
 
-    return createDomainDatagramSocketAddress(env, &addr, res, NULL);
+    return createDomainDatagramSocketAddress(env, &addr, addrlen, res, NULL);
 }
 
 static jint _send(JNIEnv* env, jclass clazz, jint fd, void* buffer, jint pos, jint limit) {
@@ -684,8 +699,10 @@ static jint netty_unix_socket_accept(JNIEnv* env, jclass clazz, jint fd, jbyteAr
     if (accept4)  {
         return socketFd;
     }
+    // accept4 was not present so need two more sys-calls ...
     if (fcntl(socketFd, F_SETFD, FD_CLOEXEC) == -1 || fcntl(socketFd, F_SETFL, O_NONBLOCK) == -1) {
-        // accept4 was not present so need two more sys-calls ...
+        // close the fd before report the error so we don't leak it.
+        close(socketFd);
         return -errno;
     }
     return socketFd;
@@ -706,7 +723,7 @@ static jbyteArray netty_unix_socket_remoteDomainSocketAddress(JNIEnv* env, jclas
     if (getpeername(fd, (struct sockaddr*) &addr, &len) == -1) {
         return NULL;
     }
-    return netty_unix_socket_createDomainSocketAddressArray(env, &addr);
+    return netty_unix_socket_createDomainSocketAddressArray(env, &addr, len);
 }
 
 static jbyteArray netty_unix_socket_localAddress(JNIEnv* env, jclass clazz, jint fd) {
@@ -724,7 +741,7 @@ static jbyteArray netty_unix_socket_localDomainSocketAddress(JNIEnv* env, jclass
     if (getsockname(fd, (struct sockaddr*) &addr, &len) == -1) {
         return NULL;
     }
-    return netty_unix_socket_createDomainSocketAddressArray(env, &addr);
+    return netty_unix_socket_createDomainSocketAddressArray(env, &addr, len);
 }
 
 static jint netty_unix_socket_newSocketDgramFd(JNIEnv* env, jclass clazz, jboolean ipv6) {
@@ -805,6 +822,9 @@ static jint netty_unix_socket_sendToAddressesDomainSocket(JNIEnv* env, jclass cl
     addr.sun_family = AF_UNIX;
 
     jbyte* socket_path = (*env)->GetByteArrayElements(env, socketPath, 0);
+    if (socket_path == NULL) {
+        return -1;
+    }
     socket_path_len = (*env)->GetArrayLength(env, socketPath);
     if (socket_path_len > sizeof(addr.sun_path)) {
         socket_path_len = sizeof(addr.sun_path);
@@ -857,6 +877,9 @@ static jint netty_unix_socket_bindDomainSocket(JNIEnv* env, jclass clazz, jint f
     addr.sun_family = AF_UNIX;
 
     jbyte* socket_path = (*env)->GetByteArrayElements(env, socketPath, 0);
+    if (socket_path == NULL) {
+        return -1;
+    }
     jint socket_path_len = (*env)->GetArrayLength(env, socketPath);
 
     if (socket_path_len > sizeof(addr.sun_path) || (socket_path_len == sizeof(addr.sun_path) && socket_path[socket_path_len] != '\0')) {
@@ -886,6 +909,9 @@ static jint netty_unix_socket_connectDomainSocket(JNIEnv* env, jclass clazz, jin
     addr.sun_family = AF_UNIX;
 
     jbyte* socket_path = (*env)->GetByteArrayElements(env, socketPath, 0);
+    if (socket_path == NULL) {
+        return -1;
+    }
     socket_path_len = (*env)->GetArrayLength(env, socketPath);
 
     if (socket_path_len > sizeof(addr.sun_path) || (socket_path_len == sizeof(addr.sun_path) && socket_path[socket_path_len] != '\0')) {
@@ -914,10 +940,6 @@ static jint netty_unix_socket_recvFd(JNIEnv* env, jclass clazz, jint fd) {
     char control[CMSG_SPACE(sizeof(int))] = { 0 };
     char iovecData[1];
 
-    descriptorMessage.msg_control = control;
-    descriptorMessage.msg_controllen = sizeof(control);
-    descriptorMessage.msg_iov = iov;
-    descriptorMessage.msg_iovlen = 1;
     iov[0].iov_base = iovecData;
     iov[0].iov_len = sizeof(iovecData);
 
@@ -925,6 +947,14 @@ static jint netty_unix_socket_recvFd(JNIEnv* env, jclass clazz, jint fd) {
     int err;
 
     for (;;) {
+        // Reset descriptorMessage to an initial start at the beginning of the loop as we might run it multiple
+        // times.
+        memset(&descriptorMessage, 0, sizeof(descriptorMessage));
+        descriptorMessage.msg_control = control;
+        descriptorMessage.msg_controllen = sizeof(control);
+        descriptorMessage.msg_iov = iov;
+        descriptorMessage.msg_iovlen = 1;
+
         do {
             res = recvmsg(fd, &descriptorMessage, 0);
             // Keep on reading if we was interrupted
@@ -938,21 +968,61 @@ static jint netty_unix_socket_recvFd(JNIEnv* env, jclass clazz, jint fd) {
             return -err;
         }
 
-        struct cmsghdr* cmsg = CMSG_FIRSTHDR(&descriptorMessage);
-        if (!cmsg) {
-            return -errno;
+        // Walk every cmsg; close any SCM_RIGHTS fds we cannot use so they
+        // are never silently leaked (e.g. peer sent more than one fd).
+        jint result = -1;
+        err = 0;
+
+        // If ancillary data was truncated the kernel auto-closes fds that
+        // did not fit but it is still an error we must not retry and so should report it back to the caller.
+        // Beside this we also need to ensure we close all other fds so they not leak.
+        if (descriptorMessage.msg_flags & MSG_CTRUNC) {
+            err = EMSGSIZE;
         }
 
-        if ((cmsg->cmsg_len == CMSG_LEN(sizeof(int))) && (cmsg->cmsg_level == SOL_SOCKET) && (cmsg->cmsg_type == SCM_RIGHTS)) {
-            socketFd = *((int *) CMSG_DATA(cmsg));
-            // set as non blocking as we want to use it with kqueue/epoll
-            if (fcntl(socketFd, F_SETFL, O_NONBLOCK) == -1) {
-                err = errno;
-                close(socketFd);
-                return -err;
+        struct cmsghdr* cmsg = CMSG_FIRSTHDR(&descriptorMessage);
+        while (cmsg != NULL) {
+            if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS) {
+                int nfds = (int) ((cmsg->cmsg_len - CMSG_LEN(0)) / sizeof(int));
+                int* fds  = (int*) CMSG_DATA(cmsg);
+
+                if (nfds == 1 && err == 0) {
+                    socketFd = fds[0];
+
+                    // set as non blocking as we want to use it with kqueue/epoll
+                    if (fcntl(socketFd, F_SETFL, O_NONBLOCK) == -1) {
+                        err = errno;
+                        close(socketFd);
+                    } else {
+                        result = socketFd;
+                    }
+                } else {
+                    int i = 0;
+                    // Peer sent an unexpected number of fds; close them all
+                    // and signal an error so the caller does not retry blindly.
+                    for (i = 0; i < nfds; i++) {
+                        close(fds[i]);
+                    }
+                    if (result >= 0) {
+                        // Already accepted one fd above; undo it.
+                        close(result);
+                        result = -1;
+                    }
+                    // check if we need to update the err or if we already did set it to an error.
+                    if (err == 0) {
+                        err = EINVAL;
+                    }
+                }
             }
-            return socketFd;
+            cmsg = CMSG_NXTHDR(&descriptorMessage, cmsg);
         }
+        if (result != -1) {
+            return result;
+        }
+        if (err != 0) {
+            return -err;
+        }
+        // No SCM_RIGHTS cmsg found and no error; try again.
     }
 }
 
@@ -1157,6 +1227,9 @@ static void netty_unix_socket_setIntOpt(JNIEnv* env, jclass clazz, jint fd, jint
 
 static void netty_unix_socket_setRawOptArray(JNIEnv* env, jclass clazz, jint fd, jint level, jint optname, jbyteArray inArray, jint offset, jint len) {
     jbyte* optval = (*env)->GetByteArrayElements(env, inArray, 0);
+    if (optval == NULL) {
+        return;
+    }
     netty_unix_socket_setOption(env, fd, level, optname, optval + offset, len);
     (*env)->ReleaseByteArrayElements(env, inArray, optval, 0);
 }
@@ -1175,6 +1248,9 @@ static jint netty_unix_socket_getIntOpt(JNIEnv* env, jclass clazz, jint fd, jint
 
 static void netty_unix_socket_getRawOptArray(JNIEnv* env, jclass clazz, jint fd, jint level, jint optname, jbyteArray outArray, jint offset, jint len) {
     jbyte* optval = (*env)->GetByteArrayElements(env, outArray, 0);
+    if (optval == NULL) {
+        return;
+    }
     netty_unix_socket_getOption(env, fd, level, optname, optval + offset, len);
     (*env)->ReleaseByteArrayElements(env, outArray, optval, 0);
 }

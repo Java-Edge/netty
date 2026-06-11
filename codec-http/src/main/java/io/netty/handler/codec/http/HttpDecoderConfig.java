@@ -34,6 +34,8 @@ public final class HttpDecoderConfig implements Cloneable {
     private int maxInitialLineLength = HttpObjectDecoder.DEFAULT_MAX_INITIAL_LINE_LENGTH;
     private int maxHeaderSize = HttpObjectDecoder.DEFAULT_MAX_HEADER_SIZE;
     private int initialBufferSize = HttpObjectDecoder.DEFAULT_INITIAL_BUFFER_SIZE;
+    private boolean strictLineParsing = HttpObjectDecoder.DEFAULT_STRICT_LINE_PARSING;
+    private boolean useRfc9112TransferEncoding = HttpObjectDecoder.RFC9112_TRANSFER_ENCODING;
 
     public int getInitialBufferSize() {
         return initialBufferSize;
@@ -76,6 +78,9 @@ public final class HttpDecoderConfig implements Cloneable {
     /**
      * Set the maximum line length of header lines.
      * This limits how much memory Netty will use when parsing HTTP header key-value pairs.
+     * The limit applies to the sum of all the headers, so it applies equally to many short header-lines,
+     * or fewer but longer header lines.
+     * <p>
      * You would typically set this to the same value as {@link #setMaxInitialLineLength(int)}.
      *
      * @param maxHeaderSize The maximum length, in bytes.
@@ -211,6 +216,60 @@ public final class HttpDecoderConfig implements Cloneable {
     public HttpDecoderConfig setTrailersFactory(HttpHeadersFactory trailersFactory) {
         checkNotNull(trailersFactory, "trailersFactory");
         this.trailersFactory = trailersFactory;
+        return this;
+    }
+
+    public boolean isStrictLineParsing() {
+        return strictLineParsing;
+    }
+
+    /**
+     * The RFC 9112 specification for the HTTP protocol says that the initial start-line, and the following header
+     * field-lines, must be separated by a Carriage Return (CR) and Line Feed (LF) octet pair, but also offers that
+     * implementations "MAY" accept just a Line Feed octet as a separator.
+     * <p>
+     * Parsing leniencies can increase compatibility with a wider range of implementations, but can also cause
+     * security vulnerabilities, when multiple systems disagree on the meaning of leniently parsed messages.
+     * <p>
+     * When <em>strict line parsing</em> is enabled ({@code true}), then Netty will enforce that start- and header
+     * field-lines MUST be separated by a CR LF octet pair, and will produce messages with failed
+     * {@link io.netty.handler.codec.DecoderResult}s.
+     * Additionally, Netty will enforce that only CR LF characters precede the initial line, if any.
+     * <p>
+     * When <em>strict line parsing</em> is disabled ({@code false}), then Netty will accept lone LF octets as line
+     * separators for the start- and header field-lines.
+     * Additionally, Netty will ignore any ISO control and line separator characters prior to the initial line.
+     * <p>
+     * See <a href="https://datatracker.ietf.org/doc/html/rfc9112#name-message-format">RFC 9112 Section 2.1</a> and
+     * <a href="https://datatracker.ietf.org/doc/html/rfc9112#section-2.2-6">RFC 9112 Section 2.2</a>.
+     * @param strictLineParsing Whether <em>strict line parsing</em> should be enabled ({@code true}),
+     * or not ({@code false}).
+     * @return This decoder config.
+     */
+    public HttpDecoderConfig setStrictLineParsing(boolean strictLineParsing) {
+        this.strictLineParsing = strictLineParsing;
+        return this;
+    }
+
+    public boolean isUseRfc9112TransferEncoding() {
+        return useRfc9112TransferEncoding;
+    }
+
+    /**
+     * The RFC 9112 specification is more strict than RFC 7230 with regards to having {@code Transfer-Encoding} and
+     * {@code Content-Length} headers in the same HTTP message. Senders are now forbidden from including both headers
+     * in the same message, while servers may reject such requests. When this setting is set to {@code true}, which
+     * is the default, then such messages will be <em>rejected.</em>
+     * <p>
+     * When this setting is set to {@code false}, it restores the RFC 7230 behavior of instead removing any
+     * {@code Content-Length} headers when {@code Transfer-Encoding} headers are present.
+     * @param useRfc9112TransferEncoding Whether to reject messages with both {@code Transfer-Encoding} and
+     *                                   {@code Content-Length} headers.
+     * @return This decoder config.
+     * @see HttpObjectDecoder#handleTransferEncodingChunkedWithContentLength(HttpMessage)
+     */
+    public HttpDecoderConfig setUseRfc9112TransferEncoding(boolean useRfc9112TransferEncoding) {
+        this.useRfc9112TransferEncoding = useRfc9112TransferEncoding;
         return this;
     }
 

@@ -16,10 +16,8 @@
 package io.netty.resolver.dns;
 
 import io.netty.util.internal.MathUtil;
-import io.netty.util.internal.PlatformDependent;
-import io.netty.util.internal.ThreadLocalRandom;
 
-import java.util.Random;
+import java.security.SecureRandom;
 
 /**
  * Special data-structure that will allow to retrieve the next query id to use, while still guarantee some sort
@@ -35,15 +33,16 @@ final class DnsQueryIdSpace {
     // If there are other buckets left that have at least 500 usable ids we will drop an unused bucket.
     private static final int BUCKET_DROP_THRESHOLD = 500;
     private final DnsQueryIdRange[] idBuckets = new DnsQueryIdRange[BUCKETS];
+    private final SecureRandom random = new SecureRandom();
 
     DnsQueryIdSpace() {
         assert idBuckets.length == MathUtil.findNextPositivePowerOfTwo(idBuckets.length);
         // We start with 1 bucket.
-        idBuckets[0] = newBucket(0);
+        idBuckets[0] = newBucket(0, random);
     }
 
-    private static DnsQueryIdRange newBucket(int idBucketsIdx) {
-        return new DnsQueryIdRange(BUCKET_SIZE, idBucketsIdx * BUCKET_SIZE);
+    private static DnsQueryIdRange newBucket(int idBucketsIdx, SecureRandom random) {
+        return new DnsQueryIdRange(BUCKET_SIZE, idBucketsIdx * BUCKET_SIZE, random);
     }
 
     /**
@@ -62,9 +61,9 @@ final class DnsQueryIdSpace {
                 }
             } else if (freeIdx == -1 ||
                     // Let's make it somehow random which free slot is used.
-                    ThreadLocalRandom.current().nextBoolean()) {
-                    // We have a slot that we can use to create a new bucket if we need to.
-                    freeIdx = bucketIdx;
+                    random.nextBoolean()) {
+                // We have a slot that we can use to create a new bucket if we need to.
+                freeIdx = bucketIdx;
             }
         }
         if (freeIdx == -1) {
@@ -73,7 +72,7 @@ final class DnsQueryIdSpace {
         }
 
         // We still have some slots free to store a new bucket. Let's do this now and use it to generate the next id.
-        DnsQueryIdRange bucket = newBucket(freeIdx);
+        DnsQueryIdRange bucket = newBucket(freeIdx, random);
         idBuckets[freeIdx] = bucket;
         int id = bucket.nextId();
         assert id >= 0;
@@ -142,11 +141,13 @@ final class DnsQueryIdSpace {
         // Holds all possible ids which are stored as unsigned shorts
         private final short[] ids;
         private final int startId;
+        private final SecureRandom random;
         private int count;
 
-        DnsQueryIdRange(int bucketSize, int startId) {
+        DnsQueryIdRange(int bucketSize, int startId, SecureRandom random) {
             this.ids = new short[bucketSize];
             this.startId = startId;
+            this.random = random;
             for (int v = startId; v < bucketSize + startId; v++) {
                 pushId(v);
             }
@@ -179,10 +180,15 @@ final class DnsQueryIdSpace {
             }
             assert id <= startId + ids.length && id >= startId;
             // pick a slot for our index, and whatever was in that slot before will get moved to the tail.
-            Random random = PlatformDependent.threadLocalRandom();
             int insertionPosition = random.nextInt(count + 1);
-            ids[count] = ids[insertionPosition];
-            ids[insertionPosition] = (short) id;
+            short moveId = ids[insertionPosition];
+            short insertId = (short) id;
+
+            // Assert that the ids are different or its the same index.
+            assert moveId != insertId || insertionPosition == count;
+
+            ids[count] = moveId;
+            ids[insertionPosition] = insertId;
             count++;
         }
 

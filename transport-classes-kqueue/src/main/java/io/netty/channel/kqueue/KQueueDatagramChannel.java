@@ -33,8 +33,8 @@ import io.netty.channel.unix.UnixChannelUtil;
 import io.netty.util.UncheckedBooleanSupplier;
 import io.netty.util.internal.ObjectUtil;
 import io.netty.util.internal.StringUtil;
-import io.netty.util.internal.UnstableApi;
 
+import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.NetworkInterface;
@@ -46,7 +46,6 @@ import java.nio.channels.UnresolvedAddressException;
 
 import static io.netty.channel.kqueue.BsdSocket.newSocketDgram;
 
-@UnstableApi
 public final class KQueueDatagramChannel extends AbstractKQueueDatagramChannel implements DatagramChannel {
     private static final String EXPECTED_TYPES =
             " (expected: " + StringUtil.simpleClassName(DatagramPacket.class) + ", " +
@@ -267,7 +266,11 @@ public final class KQueueDatagramChannel extends AbstractKQueueDatagramChannel i
         if (data.hasMemoryAddress()) {
             long memoryAddress = data.memoryAddress();
             if (remoteAddress == null) {
-                writtenBytes = socket.writeAddress(memoryAddress, data.readerIndex(), data.writerIndex());
+                try {
+                    writtenBytes = socket.writeAddress(memoryAddress, data.readerIndex(), data.writerIndex());
+                } catch (Errors.NativeIoException e) {
+                    throw translateForConnected(e);
+                }
             } else {
                 writtenBytes = socket.sendToAddress(memoryAddress, data.readerIndex(), data.writerIndex(),
                         remoteAddress.getAddress(), remoteAddress.getPort());
@@ -295,6 +298,16 @@ public final class KQueueDatagramChannel extends AbstractKQueueDatagramChannel i
         }
 
         return writtenBytes > 0;
+    }
+
+    private static IOException translateForConnected(Errors.NativeIoException e) {
+        // We need to correctly translate connect errors to match NIO behaviour.
+        if (e.expectedErr() == Errors.ERROR_ECONNREFUSED_NEGATIVE) {
+            PortUnreachableException error = new PortUnreachableException(e.getMessage());
+            error.initCause(e);
+            return error;
+        }
+        return e;
     }
 
     private static void checkUnresolved(AddressedEnvelope<?, ?> envelope) {

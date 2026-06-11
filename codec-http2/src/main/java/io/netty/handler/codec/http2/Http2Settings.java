@@ -16,9 +16,9 @@
 package io.netty.handler.codec.http2;
 
 import io.netty.util.collection.CharObjectHashMap;
-import io.netty.util.internal.UnstableApi;
 
 import static io.netty.handler.codec.http2.Http2CodecUtil.DEFAULT_HEADER_LIST_SIZE;
+import static io.netty.handler.codec.http2.Http2CodecUtil.DEFAULT_MAX_CONCURRENT_STREAMS;
 import static io.netty.handler.codec.http2.Http2CodecUtil.MAX_CONCURRENT_STREAMS;
 import static io.netty.handler.codec.http2.Http2CodecUtil.MAX_FRAME_SIZE_LOWER_BOUND;
 import static io.netty.handler.codec.http2.Http2CodecUtil.MAX_FRAME_SIZE_UPPER_BOUND;
@@ -31,6 +31,7 @@ import static io.netty.handler.codec.http2.Http2CodecUtil.MIN_HEADER_LIST_SIZE;
 import static io.netty.handler.codec.http2.Http2CodecUtil.MIN_HEADER_TABLE_SIZE;
 import static io.netty.handler.codec.http2.Http2CodecUtil.MIN_INITIAL_WINDOW_SIZE;
 import static io.netty.handler.codec.http2.Http2CodecUtil.NUM_STANDARD_SETTINGS;
+import static io.netty.handler.codec.http2.Http2CodecUtil.SETTINGS_ENABLE_CONNECT_PROTOCOL;
 import static io.netty.handler.codec.http2.Http2CodecUtil.SETTINGS_ENABLE_PUSH;
 import static io.netty.handler.codec.http2.Http2CodecUtil.SETTINGS_HEADER_TABLE_SIZE;
 import static io.netty.handler.codec.http2.Http2CodecUtil.SETTINGS_INITIAL_WINDOW_SIZE;
@@ -46,7 +47,6 @@ import static java.lang.Integer.toHexString;
  * the spec for the SETTINGS frame. Permits storage of arbitrary key/value pairs but provides helper
  * methods for standard settings.
  */
-@UnstableApi
 public final class Http2Settings extends CharObjectHashMap<Long> {
     /**
      * Default capacity based on the number of standard settings from the HTTP/2 spec, adjusted so that adding all of
@@ -185,6 +185,25 @@ public final class Http2Settings extends CharObjectHashMap<Long> {
     }
 
     /**
+     * Gets the {@code SETTINGS_ENABLE_CONNECT_PROTOCOL} value. If unavailable, returns {@code null}.
+     */
+    public Boolean connectProtocolEnabled() {
+        Long value = get(SETTINGS_ENABLE_CONNECT_PROTOCOL);
+        if (value == null) {
+            return null;
+        }
+        return TRUE.equals(value);
+    }
+
+    /**
+     * Sets the {@code SETTINGS_ENABLE_CONNECT_PROTOCOL} value.
+     */
+    public Http2Settings connectProtocolEnabled(boolean enabled) {
+        put(SETTINGS_ENABLE_CONNECT_PROTOCOL, enabled ? TRUE : FALSE);
+        return this;
+    }
+
+    /**
      * Clears and then copies the given settings into this object.
      */
     public Http2Settings copyFrom(Http2Settings settings) {
@@ -245,6 +264,12 @@ public final class Http2Settings extends CharObjectHashMap<Long> {
                             ", expected [" + MIN_HEADER_LIST_SIZE + ", " + MAX_HEADER_LIST_SIZE + ']');
                 }
                 break;
+            case SETTINGS_ENABLE_CONNECT_PROTOCOL:
+                if (value != 0L && value != 1L) {
+                    throw new IllegalArgumentException("Setting ENABLE_CONNECT_PROTOCOL is invalid: " + value +
+                            ", expected [0, 1]");
+                }
+                break;
             default:
                 // Non-standard HTTP/2 setting
                 if (value < 0 || value > MAX_UNSIGNED_INT) {
@@ -270,6 +295,8 @@ public final class Http2Settings extends CharObjectHashMap<Long> {
                 return "MAX_FRAME_SIZE";
             case SETTINGS_MAX_HEADER_LIST_SIZE:
                 return "MAX_HEADER_LIST_SIZE";
+            case SETTINGS_ENABLE_CONNECT_PROTOCOL:
+                return "ENABLE_CONNECT_PROTOCOL";
             default:
                 // Unknown keys.
                 return "0x" + toHexString(key);
@@ -277,6 +304,7 @@ public final class Http2Settings extends CharObjectHashMap<Long> {
     }
 
     public static Http2Settings defaultSettings() {
-        return new Http2Settings().maxHeaderListSize(DEFAULT_HEADER_LIST_SIZE);
+        return new Http2Settings().maxHeaderListSize(DEFAULT_HEADER_LIST_SIZE)
+                .maxConcurrentStreams(DEFAULT_MAX_CONCURRENT_STREAMS);
     }
 }

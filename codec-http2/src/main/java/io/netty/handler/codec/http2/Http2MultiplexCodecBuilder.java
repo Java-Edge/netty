@@ -17,7 +17,6 @@ package io.netty.handler.codec.http2;
 
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerAdapter;
-import io.netty.util.internal.UnstableApi;
 
 import static io.netty.util.internal.ObjectUtil.checkNotNull;
 
@@ -27,7 +26,6 @@ import static io.netty.util.internal.ObjectUtil.checkNotNull;
  * @deprecated use {@link Http2FrameCodecBuilder} together with {@link Http2MultiplexHandler}.
  */
 @Deprecated
-@UnstableApi
 public class Http2MultiplexCodecBuilder
         extends AbstractHttp2ConnectionHandlerBuilder<Http2MultiplexCodec, Http2MultiplexCodecBuilder> {
     private Http2FrameWriter frameWriter;
@@ -218,6 +216,23 @@ public class Http2MultiplexCodecBuilder
     }
 
     @Override
+    public Http2MultiplexCodecBuilder encoderEnforceMaxRstFramesPerWindow(
+            int maxRstFramesPerWindow, int secondsPerWindow) {
+        return super.encoderEnforceMaxRstFramesPerWindow(maxRstFramesPerWindow, secondsPerWindow);
+    }
+
+    @Override
+    public int decoderEnforceMaxSmallContinuationFrames() {
+        return super.decoderEnforceMaxSmallContinuationFrames();
+    }
+
+    @Override
+    public Http2MultiplexCodecBuilder decoderEnforceMaxSmallContinuationFrames(
+            int maxConsecutiveContinuationsFrames) {
+        return super.decoderEnforceMaxSmallContinuationFrames(maxConsecutiveContinuationsFrames);
+    }
+
+    @Override
     public Http2MultiplexCodec build() {
         Http2FrameWriter frameWriter = this.frameWriter;
         if (frameWriter != null) {
@@ -227,7 +242,8 @@ public class Http2MultiplexCodecBuilder
             Long maxHeaderListSize = initialSettings().maxHeaderListSize();
             Http2FrameReader frameReader = new DefaultHttp2FrameReader(maxHeaderListSize == null ?
                     new DefaultHttp2HeadersDecoder(isValidateHeaders()) :
-                    new DefaultHttp2HeadersDecoder(isValidateHeaders(), maxHeaderListSize));
+                    new DefaultHttp2HeadersDecoder(isValidateHeaders(), maxHeaderListSize),
+                    decoderEnforceMaxSmallContinuationFrames());
 
             if (frameLogger() != null) {
                 frameWriter = new Http2OutboundFrameLogger(frameWriter, frameLogger());

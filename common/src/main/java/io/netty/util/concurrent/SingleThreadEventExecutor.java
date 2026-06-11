@@ -19,7 +19,6 @@ import io.netty.util.internal.ObjectUtil;
 import io.netty.util.internal.PlatformDependent;
 import io.netty.util.internal.SystemPropertyUtil;
 import io.netty.util.internal.ThreadExecutorMap;
-import io.netty.util.internal.UnstableApi;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 import org.jetbrains.annotations.Async.Schedule;
@@ -270,6 +269,9 @@ public abstract class SingleThreadEventExecutor extends AbstractScheduledEventEx
                 }
 
                 if (task != null) {
+                    if (task == WAKEUP_TASK) {
+                        return null;
+                    }
                     return task;
                 }
             }
@@ -495,7 +497,6 @@ public abstract class SingleThreadEventExecutor extends AbstractScheduledEventEx
     /**
      * Invoked before returning from {@link #runAllTasks()} and {@link #runAllTasks(long)}.
      */
-    @UnstableApi
     protected void afterRunningAllTasks() { }
 
     /**
@@ -516,7 +517,6 @@ public abstract class SingleThreadEventExecutor extends AbstractScheduledEventEx
      * Returns the absolute point in time (relative to {@link #getCurrentTimeNanos()}) at which the next
      * closest scheduled task should run.
      */
-    @UnstableApi
     protected long deadlineNanos() {
         ScheduledFutureTask<?> scheduledTask = peekScheduledTask();
         if (scheduledTask == null) {
@@ -537,7 +537,16 @@ public abstract class SingleThreadEventExecutor extends AbstractScheduledEventEx
     }
 
     /**
-     * Run the tasks in the {@link #taskQueue}
+     * Runs the task-processing loop until {@link #confirmShutdown()} returns {@code true}.
+     *
+     * <p>Implementations <strong>must not let a {@link Throwable} thrown by a task escape this
+     * method</strong>: any uncaught {@link Throwable} terminates the executor (logged at {@code WARN}
+     * and surfaced via {@link #terminationFuture()}), at which point every {@code Channel}
+     * registered with this executor stops processing I/O and new task submissions are rejected.
+     * The supplied helpers - {@link #runAllTasks()}, {@link #runAllTasks(long)}, and
+     * {@link #safeExecute(Runnable)} - catch {@code Throwable} for you; custom loops built on
+     * {@link #pollTask()} or {@link #takeTask()} are responsible for wrapping each task
+     * invocation accordingly.
      */
     protected abstract void run();
 
@@ -992,11 +1001,13 @@ public abstract class SingleThreadEventExecutor extends AbstractScheduledEventEx
                 }
 
                 boolean success = false;
+                Throwable unexpectedException = null;
                 updateLastExecutionTime();
                 try {
                     SingleThreadEventExecutor.this.run();
                     success = true;
                 } catch (Throwable t) {
+                    unexpectedException = t;
                     logger.warn("Unexpected exception from an event executor: ", t);
                 } finally {
                     for (;;) {
@@ -1056,7 +1067,11 @@ public abstract class SingleThreadEventExecutor extends AbstractScheduledEventEx
                                 logger.warn("An event executor terminated with " +
                                         "non-empty task queue (" + numUserTasks + ')');
                             }
-                            terminationFuture.setSuccess(null);
+                            if (unexpectedException == null) {
+                                terminationFuture.setSuccess(null);
+                            } else {
+                                terminationFuture.setFailure(unexpectedException);
+                            }
                         }
                     }
                 }

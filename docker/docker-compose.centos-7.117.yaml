@@ -6,12 +6,15 @@ services:
     image: netty:centos-7-1.17
     build:
       args:
-        java_version : "17.0.10-zulu"
+        java_version : "17.0.18-zulu"
 
   build:
     image: netty:centos-7-1.17
 
   build-leak:
+    image: netty:centos-7-1.17
+
+  build-with-oio-testsuite:
     image: netty:centos-7-1.17
 
   build-boringssl-static:

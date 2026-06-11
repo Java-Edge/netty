@@ -15,7 +15,6 @@
  */
 package io.netty.buffer;
 
-import io.netty.util.CharsetUtil;
 import io.netty.util.internal.ObjectUtil;
 
 import java.io.DataOutput;
@@ -42,11 +41,24 @@ public class ByteBufOutputStream extends OutputStream implements DataOutput {
     private final int startIndex;
     private DataOutputStream utf8out; // lazily-instantiated
     private boolean closed;
+    private final boolean releaseOnClose;
 
     /**
      * Creates a new stream which writes data to the specified {@code buffer}.
      */
     public ByteBufOutputStream(ByteBuf buffer) {
+        this(buffer, false);
+    }
+
+    /**
+     * Creates a new stream which writes data to the specified {@code buffer}.
+     *
+     * @param buffer Writes data to the buffer for this {@link OutputStream}.
+     * @param releaseOnClose {@code true} means that when {@link #close()} is called then {@link ByteBuf#release()} will
+     *                       be called on {@code buffer}.
+     */
+    public ByteBufOutputStream(ByteBuf buffer, boolean releaseOnClose) {
+        this.releaseOnClose = releaseOnClose;
         this.buffer = ObjectUtil.checkNotNull(buffer, "buffer");
         startIndex = buffer.writerIndex();
     }
@@ -60,10 +72,6 @@ public class ByteBufOutputStream extends OutputStream implements DataOutput {
 
     @Override
     public void write(byte[] b, int off, int len) throws IOException {
-        if (len == 0) {
-            return;
-        }
-
         buffer.writeBytes(b, off, len);
     }
 
@@ -89,7 +97,16 @@ public class ByteBufOutputStream extends OutputStream implements DataOutput {
 
     @Override
     public void writeBytes(String s) throws IOException {
-        buffer.writeCharSequence(s, CharsetUtil.US_ASCII);
+        // We don't use `ByteBuf.writeCharSequence` here, because `writeBytes` is specified to only write the
+        // lower-order by of multibyte characters (exactly one byte per character in the string), while
+        // `writeCharSequence` will instead write a '?' replacement character.
+        int length = s.length();
+        buffer.ensureWritable(length);
+        int offset = buffer.writerIndex();
+        for (int i = 0; i < length; i++) {
+            buffer.setByte(offset + i, (byte) s.charAt(i));
+        }
+        buffer.writerIndex(offset + length);
     }
 
     @Override
@@ -100,7 +117,7 @@ public class ByteBufOutputStream extends OutputStream implements DataOutput {
     @Override
     public void writeChars(String s) throws IOException {
         int len = s.length();
-        for (int i = 0 ; i < len ; i ++) {
+        for (int i = 0; i < len; i++) {
             buffer.writeChar(s.charAt(i));
         }
     }
@@ -162,6 +179,9 @@ public class ByteBufOutputStream extends OutputStream implements DataOutput {
         } finally {
             if (utf8out != null) {
                 utf8out.close();
+            }
+            if (releaseOnClose) {
+                buffer.release();
             }
         }
     }

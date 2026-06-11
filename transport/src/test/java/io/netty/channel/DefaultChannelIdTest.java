@@ -25,14 +25,13 @@ import org.junit.jupiter.api.Test;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 
-import static org.hamcrest.CoreMatchers.is;
-import static org.hamcrest.CoreMatchers.not;
-import static org.hamcrest.CoreMatchers.sameInstance;
-import static org.hamcrest.MatcherAssert.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @SuppressWarnings("DynamicRegexReplaceableByCompiledPattern")
 public class DefaultChannelIdTest {
+
     @Test
     public void testShortText() {
         String text = DefaultChannelId.newInstance().asShortText();
@@ -49,14 +48,14 @@ public class DefaultChannelIdTest {
     public void testIdempotentMachineId() {
         String a = DefaultChannelId.newInstance().asLongText().substring(0, 16);
         String b = DefaultChannelId.newInstance().asLongText().substring(0, 16);
-        assertThat(a, is(b));
+        assertEquals(a, b);
     }
 
     @Test
     public void testIdempotentProcessId() {
         String a = DefaultChannelId.newInstance().asLongText().substring(17, 21);
         String b = DefaultChannelId.newInstance().asLongText().substring(17, 21);
-        assertThat(a, is(b));
+        assertEquals(a, b);
     }
 
     @Test
@@ -80,8 +79,37 @@ public class DefaultChannelIdTest {
             in.close();
         }
 
-        assertThat(a, is(b));
-        assertThat(a, is(not(sameInstance(b))));
-        assertThat(a.asLongText(), is(b.asLongText()));
+        assertEquals(a, b);
+        assertNotSame(a, b);
+        assertEquals(a.asLongText(), b.asLongText());
+    }
+
+    @Test
+    public void testDeserialization() throws Exception {
+        // DefaultChannelId with 8 byte machineId
+        final DefaultChannelId c8 = new DefaultChannelId(
+                new byte[] {
+                        (byte) 0x01, (byte) 0x23, (byte) 0x45, (byte) 0x67,
+                        (byte) 0x89, (byte) 0xab, (byte) 0xcd, (byte) 0xef
+                },
+                0x000052af,
+                0x00000000,
+                0x06504f638eb4c386L,
+                0xd964df5e);
+
+        // DefaultChannelId with 6 byte machineId
+        final DefaultChannelId c6 =
+                new DefaultChannelId(
+                        new byte[] {
+                                (byte) 0x01, (byte) 0x23, (byte) 0x45, (byte) 0x67,
+                                (byte) 0x89, (byte) 0xab,
+                        },
+                        0xce005283,
+                        0x00000001,
+                        0x069e6dce9eb4516fL,
+                        0x721757b7);
+
+        assertEquals("0123456789abcdef-000052af-00000000-06504f638eb4c386-d964df5e", c8.asLongText());
+        assertEquals("0123456789ab-ce005283-00000001-069e6dce9eb4516f-721757b7", c6.asLongText());
     }
 }

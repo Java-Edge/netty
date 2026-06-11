@@ -19,9 +19,7 @@ import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
 import io.netty.util.internal.ObjectUtil;
-import io.netty.util.internal.UnstableApi;
 
-@UnstableApi
 public final class TcpDnsQueryDecoder extends LengthFieldBasedFrameDecoder {
     private final DnsRecordDecoder decoder;
 
@@ -47,11 +45,15 @@ public final class TcpDnsQueryDecoder extends LengthFieldBasedFrameDecoder {
             return null;
         }
 
-        return DnsMessageUtil.decodeDnsQuery(decoder, frame.slice(), new DnsMessageUtil.DnsQueryFactory() {
-            @Override
-            public DnsQuery newQuery(int id, DnsOpCode dnsOpCode) {
-                return new DefaultDnsQuery(id, dnsOpCode);
-            }
-        });
+        try {
+            return DnsMessageUtil.decodeDnsQuery(decoder, frame.slice(), new DnsMessageUtil.DnsQueryFactory() {
+                @Override
+                public DnsQuery newQuery(int id, DnsOpCode dnsOpCode) {
+                    return new DefaultDnsQuery(id, dnsOpCode);
+                }
+            });
+        } finally {
+            frame.release();
+        }
     }
 }

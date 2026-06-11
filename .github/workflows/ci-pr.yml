@@ -28,6 +28,12 @@ permissions:
 env:
   MAVEN_OPTS: -Dhttp.keepAlive=false -Dmaven.wagon.http.pool=false -Dmaven.wagon.http.retryhandler.count=5 -Dmaven.wagon.httpconnectionManager.ttlSeconds=240
 
+# Cancel running jobs when a new push happens to the same branch as otherwise it will
+# tie up too many resources without providing much value.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   verify-pr:
     runs-on: ubuntu-latest
@@ -45,10 +51,11 @@ jobs:
         continue-on-error: true
         with:
           path: ~/.m2/repository
-          key: ${{ runner.os }}-maven-verify-pr-${{ hashFiles('**/pom.xml') }}
+          key: cache-maven-${{ hashFiles('**/pom.xml') }}
           restore-keys: |
-            ${{ runner.os }}-maven-verify-pr-
-            ${{ runner.os }}-maven-
+            cache-maven-${{ hashFiles('**/pom.xml') }}
+            cache-maven-
+
       - name: Verify with Maven
         run: ./mvnw -B -ntp --file pom.xml verify -DskipTests=true
 
@@ -57,10 +64,10 @@ jobs:
 
       - name: print JVM thread dumps when cancelled
         uses: ./.github/actions/thread-dump-jvms
-        if: cancelled()
+        if: ${{ cancelled() }}
 
   build-pr-windows:
-    runs-on: windows-2019
+    runs-on: windows-2022
     name: windows-x86_64-java11-boringssl
     needs: verify-pr
     steps:
@@ -73,31 +80,32 @@ jobs:
           java-version: '11'
 
       # Cache .m2/repository
-      # Caching of maven dependencies
-      - uses: actions/cache@v4
+      - name: Cache local Maven repository
+        uses: actions/cache@v4
         continue-on-error: true
         with:
           path: ~/.m2/repository
-          key: pr-windows-x86_64-maven-cache-${{ hashFiles('**/pom.xml') }}
+          key: cache-windows-maven-${{ hashFiles('**/pom.xml') }}
           restore-keys: |
-            pr-windows-x86_64-maven-cache-
+            cache-windows-maven-${{ hashFiles('**/pom.xml') }}
+            cache-windows-maven-
 
       - name: Build project
         run: ./mvnw.cmd -B -ntp --file pom.xml clean package -Pboringssl -DskipHttp2Testsuite=true -DskipAutobahnTestsuite=true
 
       - name: print JVM thread dumps when cancelled
         uses: ./.github/actions/thread-dump-jvms
-        if: cancelled()
+        if: ${{ cancelled() }}
 
       - name: Upload Test Results
-        if: always()
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: test-results-windows-x86_64-java11-boringssl
           path: '**/target/surefire-reports/TEST-*.xml'
 
       - uses: actions/upload-artifact@v4
-        if: ${{ failure() }}
+        if: ${{ failure() || cancelled() }}
         with:
           name: build-pr-windows-target
           path: |
@@ -106,13 +114,13 @@ jobs:
 
   build-pr-cross:
     # The host should always be Linux
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         include:
           - arch: aarch64
             java_arch: arm64
-          - arch: riscv64
 
     name: linux-${{ matrix.arch }}-verify-native
     permissions:
@@ -128,12 +136,12 @@ jobs:
         continue-on-error: true
         with:
           path: ~/.m2/repository
-          key: ${{ runner.os }}-maven-build-pr-${{ matrix.arch }}-${{ hashFiles('**/pom.xml') }}
+          key: cache-maven-${{ hashFiles('**/pom.xml') }}
           restore-keys: |
-            ${{ runner.os }}-maven-build-pr-${{ matrix.arch }}-
-            ${{ runner.os }}-maven-
+            cache-maven-${{ hashFiles('**/pom.xml') }}
+            cache-maven-
 
-      - uses: uraimo/run-on-arch-action@v2
+      - uses: uraimo/run-on-arch-action@v3
         name: Run commands
         id: runcmd
         with:
@@ -163,48 +171,96 @@ jobs:
   build-pr:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         include:
           - setup: linux-x86_64-java8
             docker-compose-build: "-f docker/docker-compose.yaml -f docker/docker-compose.centos-6.18.yaml build"
-            docker-compose-run: "-f docker/docker-compose.yaml -f docker/docker-compose.centos-6.18.yaml run build-leak"
+            docker-compose-run: "-f docker/docker-compose.yaml -f docker/docker-compose.centos-6.18.yaml run build"
           - setup: linux-x86_64-java11
             docker-compose-build: "-f docker/docker-compose.yaml -f docker/docker-compose.centos-6.111.yaml build"
-            docker-compose-run: "-f docker/docker-compose.yaml -f docker/docker-compose.centos-6.111.yaml run build-leak"
+            docker-compose-run: "-f docker/docker-compose.yaml -f docker/docker-compose.centos-6.111.yaml run build"
           - setup: linux-x86_64-java11-graal
             docker-compose-build: "-f docker/docker-compose.yaml -f docker/docker-compose.centos-6.graalvm111.yaml build"
-            docker-compose-run: "-f docker/docker-compose.yaml -f docker/docker-compose.centos-6.graalvm111.yaml run build-leak"
+            docker-compose-run: "-f docker/docker-compose.yaml -f docker/docker-compose.centos-6.graalvm111.yaml run build"
           - setup: linux-x86_64-java17
             docker-compose-build: "-f docker/docker-compose.yaml -f docker/docker-compose.centos-7.117.yaml build"
-            docker-compose-run: "-f docker/docker-compose.yaml -f docker/docker-compose.centos-7.117.yaml run build-leak"
+            docker-compose-run: "-f docker/docker-compose.yaml -f docker/docker-compose.centos-7.117.yaml run build"
           - setup: linux-x86_64-java21
             docker-compose-build: "-f docker/docker-compose.yaml -f docker/docker-compose.centos-6.21.yaml build"
-            docker-compose-run: "-f docker/docker-compose.yaml -f docker/docker-compose.centos-6.21.yaml run build-leak"
+            docker-compose-run: "-f docker/docker-compose.yaml -f docker/docker-compose.centos-6.21.yaml run build-with-oio-testsuite"
+          - setup: linux-x86_64-java24
+            docker-compose-build: "-f docker/docker-compose.yaml -f docker/docker-compose.centos-6.24.yaml build"
+            docker-compose-run: "-f docker/docker-compose.yaml -f docker/docker-compose.centos-6.24.yaml run build"
+          - setup: linux-x86_64-java25
+            docker-compose-build: "-f docker/docker-compose.yaml -f docker/docker-compose.centos-6.25.yaml build"
+            docker-compose-run: "-f docker/docker-compose.yaml -f docker/docker-compose.centos-6.25.yaml run build"
           - setup: linux-x86_64-java11-boringssl
             docker-compose-build: "-f docker/docker-compose.yaml -f docker/docker-compose.centos-6.111.yaml build"
             docker-compose-run: "-f docker/docker-compose.yaml -f docker/docker-compose.centos-6.111.yaml run build-leak-boringssl-static"
+          - setup: linux-x86_64-java11-adaptive
+            docker-compose-build: "-f docker/docker-compose.yaml -f docker/docker-compose.centos-6.111.yaml build"
+            docker-compose-run: "-f docker/docker-compose.yaml -f docker/docker-compose.centos-6.111.yaml run build-leak-adaptive"
+          - setup: linux-x86_64-java11-awslc
+            docker-compose-build: "-f docker/docker-compose.yaml -f docker/docker-compose.al2023.yaml build"
+            docker-compose-install-tcnative: "-f docker/docker-compose.yaml -f docker/docker-compose.al2023.yaml run install-tcnative"
+            docker-compose-update-tcnative-version: "-f docker/docker-compose.yaml -f docker/docker-compose.al2023.yaml run update-tcnative-version"
+            docker-compose-run: "-f docker/docker-compose.yaml -f docker/docker-compose.al2023.yaml run build"
 
     name: ${{ matrix.setup }} build
     needs: verify-pr
+    defaults:
+      run:
+        working-directory: netty
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: netty
+
+      - uses: actions/checkout@v4
+        if: ${{ endsWith(matrix.setup, '-awslc') }}
+        with:
+          repository: netty/netty-tcnative
+          ref: main
+          path: netty-tcnative
+          fetch-depth: 0
 
       # Cache .m2/repository
       - name: Cache local Maven repository
         uses: actions/cache@v4
         continue-on-error: true
+        if: ${{ !endsWith(matrix.setup, '-awslc') }}
         with:
           path: ~/.m2/repository
-          key: ${{ runner.os }}-maven-${{ matrix.setup }}-${{ hashFiles('**/pom.xml') }}
+          key: cache-maven-${{ hashFiles('**/pom.xml') }}
           restore-keys: |
-            ${{ runner.os }}-maven-${{ matrix.setup }}-
-            ${{ runner.os }}-maven-
+            cache-maven-${{ hashFiles('**/pom.xml') }}
+            cache-maven-
+
+      - name: Cache local Maven repository
+        uses: actions/cache@v4
+        continue-on-error: true
+        if: ${{ endsWith(matrix.setup, '-awslc') }}
+        with:
+          path: ~/.m2-al2023/repository
+          key: cache-maven-al2023-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            cache-maven-al2023-${{ hashFiles('**/pom.xml') }}
+            cache-maven-al2023-
 
       - name: Build docker image
-        run: docker-compose ${{ matrix.docker-compose-build }}
+        run: docker compose ${{ matrix.docker-compose-build }}
+
+      - name: Install custom netty-tcnative
+        if: ${{ endsWith(matrix.setup, '-awslc') }}
+        run: docker compose ${{ matrix.docker-compose-install-tcnative }}
+
+      - name: Update netty-tcnative version
+        if: ${{ endsWith(matrix.setup, '-awslc') }}
+        run: docker compose ${{ matrix.docker-compose-update-tcnative-version }}
 
       - name: Build project with leak detection
-        run: docker-compose ${{ matrix.docker-compose-run }} | tee build-leak.output
+        run: docker compose ${{ matrix.docker-compose-run }} | tee build-leak.output
 
       - name: Checking for test failures
         run: ./.github/scripts/check_build_result.sh build-leak.output
@@ -213,22 +269,81 @@ jobs:
         run: ./.github/scripts/check_leak.sh build-leak.output
 
       - name: print JVM thread dumps when cancelled
-        uses: ./.github/actions/thread-dump-jvms
-        if: cancelled()
+        uses: ./netty/.github/actions/thread-dump-jvms
+        if: ${{ cancelled() }}
 
       - name: Upload Test Results
-        if: always()
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.setup }}
+          path: 'netty/**/target/surefire-reports/TEST-*.xml'
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ failure() || cancelled() }}
+        with:
+          name: build-${{ matrix.setup }}-target
+          path: |
+            netty/**/target/surefire-reports/
+            netty/**/target/autobahntestsuite-reports/
+            netty/**/hs_err*.log
+            netty/**/core.*
+
+  build-pr-macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - setup: macos-x86_64-java8-boringssl
+            os: macos-15-intel
+          - setup: macos-aarch64-java8-boringssl
+            os: macos-15
+
+    runs-on: ${{ matrix.os }}
+    name:  ${{ matrix.setup }}  build
+    needs: verify-pr
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 8
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '8'
+
+      # Cache .m2/repository
+      # Caching of maven dependencies
+      - uses: actions/cache@v4
+        continue-on-error: true
+        with:
+          path: ~/.m2/repository
+          key: cache-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            cache-maven-${{ hashFiles('**/pom.xml') }}
+            cache-maven-
+
+      - name: Install tools via brew
+        run: brew bundle
+
+      - name: Build project
+        run: ./mvnw -B -ntp --file pom.xml clean package -Pboringssl -DskipHttp2Testsuite=true -DskipAutobahnTestsuite=true -DskipTests=true
+
+      - name: print JVM thread dumps when cancelled
+        uses: ./.github/actions/thread-dump-jvms
+        if: ${{ cancelled() }}
+
+      - name: Upload Test Results
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: test-results-${{ matrix.setup }}
           path: '**/target/surefire-reports/TEST-*.xml'
 
       - uses: actions/upload-artifact@v4
-        if: ${{ failure() }}
+        if: ${{ failure() || cancelled() }}
         with:
-          name: build-${{ matrix.setup }}-target
+          name: build-pr-${{ matrix.setup }}-target
           path: |
             **/target/surefire-reports/
-            **/target/autobahntestsuite-reports/
             **/hs_err*.log
-            **/core.*

@@ -17,12 +17,12 @@
 package io.netty.handler.codec.http2;
 
 import io.netty.handler.codec.http2.Http2HeadersEncoder.SensitivityDetector;
-import io.netty.util.internal.UnstableApi;
+
+import static io.netty.util.internal.ObjectUtil.checkPositiveOrZero;
 
 /**
  * Builder which builds {@link Http2ConnectionHandler} objects.
  */
-@UnstableApi
 public final class Http2ConnectionHandlerBuilder
         extends AbstractHttp2ConnectionHandlerBuilder<Http2ConnectionHandler, Http2ConnectionHandlerBuilder> {
 
@@ -106,6 +106,28 @@ public final class Http2ConnectionHandlerBuilder
     @Override
     public Http2ConnectionHandlerBuilder flushPreface(boolean flushPreface) {
         return super.flushPreface(flushPreface);
+    }
+
+    @Override
+    public int decoderEnforceMaxConsecutiveEmptyDataFrames() {
+        return super.decoderEnforceMaxConsecutiveEmptyDataFrames();
+    }
+
+    @Override
+    public Http2ConnectionHandlerBuilder decoderEnforceMaxConsecutiveEmptyDataFrames(int maxConsecutiveEmptyFrames) {
+        return super.decoderEnforceMaxConsecutiveEmptyDataFrames(maxConsecutiveEmptyFrames);
+    }
+
+    @Override
+    public Http2ConnectionHandlerBuilder decoderEnforceMaxRstFramesPerWindow(
+            int maxRstFramesPerWindow, int secondsPerWindow) {
+        return super.decoderEnforceMaxRstFramesPerWindow(maxRstFramesPerWindow, secondsPerWindow);
+    }
+
+    @Override
+    public Http2ConnectionHandlerBuilder encoderEnforceMaxRstFramesPerWindow(
+            int maxRstFramesPerWindow, int secondsPerWindow) {
+        return super.encoderEnforceMaxRstFramesPerWindow(maxRstFramesPerWindow, secondsPerWindow);
     }
 
     @Override

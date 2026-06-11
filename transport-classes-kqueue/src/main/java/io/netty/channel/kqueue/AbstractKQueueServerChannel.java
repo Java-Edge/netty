@@ -22,12 +22,10 @@ import io.netty.channel.ChannelOutboundBuffer;
 import io.netty.channel.ChannelPipeline;
 import io.netty.channel.EventLoop;
 import io.netty.channel.ServerChannel;
-import io.netty.util.internal.UnstableApi;
 
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 
-@UnstableApi
 public abstract class AbstractKQueueServerChannel extends AbstractKQueueChannel implements ServerChannel {
     private static final ChannelMetadata METADATA = new ChannelMetadata(false, 16);
 
@@ -79,8 +77,7 @@ public abstract class AbstractKQueueServerChannel extends AbstractKQueueChannel 
     final class KQueueServerSocketUnsafe extends AbstractKQueueUnsafe {
         // Will hold the remote address after accept(...) was successful.
         // We need 24 bytes for the address as maximum + 1 byte for storing the capacity.
-        // So use 26 bytes as it's a power of two.
-        private final byte[] acceptedAddress = new byte[26];
+        private final byte[] acceptedAddress = new byte[25];
 
         @Override
         void readReady(KQueueRecvByteAllocatorHandle allocHandle) {

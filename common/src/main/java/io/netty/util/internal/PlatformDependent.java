@@ -18,14 +18,18 @@ package io.netty.util.internal;
 import io.netty.util.CharsetUtil;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
+import org.jctools.queues.MpmcArrayQueue;
 import org.jctools.queues.MpscArrayQueue;
 import org.jctools.queues.MpscChunkedArrayQueue;
 import org.jctools.queues.MpscUnboundedArrayQueue;
 import org.jctools.queues.SpscLinkedQueue;
+import org.jctools.queues.atomic.MpmcAtomicArrayQueue;
 import org.jctools.queues.atomic.MpscAtomicArrayQueue;
 import org.jctools.queues.atomic.MpscChunkedAtomicArrayQueue;
 import org.jctools.queues.atomic.MpscUnboundedAtomicArrayQueue;
 import org.jctools.queues.atomic.SpscLinkedAtomicQueue;
+import org.jctools.queues.atomic.unpadded.MpscAtomicUnpaddedArrayQueue;
+import org.jctools.queues.unpadded.MpscUnpaddedArrayQueue;
 import org.jctools.util.Pow2;
 import org.jctools.util.UnsafeAccess;
 
@@ -87,6 +91,7 @@ public final class PlatformDependent {
 
     private static final Throwable UNSAFE_UNAVAILABILITY_CAUSE = unsafeUnavailabilityCause0();
     private static final boolean DIRECT_BUFFER_PREFERRED;
+    private static final boolean EXPLICIT_NO_PREFER_DIRECT;
     private static final long MAX_DIRECT_MEMORY = estimateMaxDirectMemory();
 
     private static final int MPSC_CHUNK_SIZE =  1024;
@@ -196,11 +201,12 @@ public final class PlatformDependent {
             CLEANER = NOOP;
         }
 
+        EXPLICIT_NO_PREFER_DIRECT = SystemPropertyUtil.getBoolean("io.netty.noPreferDirect", false);
         // We should always prefer direct buffers by default if we can use a Cleaner to release direct buffers.
         DIRECT_BUFFER_PREFERRED = CLEANER != NOOP
-                                  && !SystemPropertyUtil.getBoolean("io.netty.noPreferDirect", false);
+                                  && !EXPLICIT_NO_PREFER_DIRECT;
         if (logger.isDebugEnabled()) {
-            logger.debug("-Dio.netty.noPreferDirect: {}", !DIRECT_BUFFER_PREFERRED);
+            logger.debug("-Dio.netty.noPreferDirect: {}", EXPLICIT_NO_PREFER_DIRECT);
         }
 
         /*
@@ -235,9 +241,8 @@ public final class PlatformDependent {
                         if (file.exists()) {
                             BufferedReader reader = null;
                             try {
-                                reader = new BufferedReader(
-                                        new InputStreamReader(
-                                                new FileInputStream(file), CharsetUtil.UTF_8));
+                                reader = new BufferedReader(new InputStreamReader(
+                                        new BoundedInputStream(new FileInputStream(file)), CharsetUtil.UTF_8));
 
                                 String line;
                                 while ((line = reader.readLine()) != null) {
@@ -361,6 +366,14 @@ public final class PlatformDependent {
     }
 
     /**
+     * @param thread The thread to be checked.
+     * @return {@code true} if this {@link Thread} is a virtual thread, {@code false} otherwise.
+     */
+    public static boolean isVirtualThread(Thread thread) {
+        return PlatformDependent0.isVirtualThread(thread);
+    }
+
+    /**
      * Returns {@code true} if and only if it is fine to enable TCP_NODELAY socket option by default.
      */
     public static boolean canEnableTcpNoDelayByDefault() {
@@ -397,6 +410,14 @@ public final class PlatformDependent {
      */
     public static boolean directBufferPreferred() {
         return DIRECT_BUFFER_PREFERRED;
+    }
+
+    /**
+     * Returns {@code true} if user has specified
+     * {@code -Dio.netty.noPreferDirect=true} option.
+     */
+    public static boolean isExplicitNoPreferDirect() {
+        return EXPLICIT_NO_PREFER_DIRECT;
     }
 
     /**
@@ -570,31 +591,47 @@ public final class PlatformDependent {
     }
 
     public static byte getByte(byte[] data, int index) {
-        return PlatformDependent0.getByte(data, index);
+        return hasUnsafe() ? PlatformDependent0.getByte(data, index) : data[index];
     }
 
     public static byte getByte(byte[] data, long index) {
-        return PlatformDependent0.getByte(data, index);
+        return hasUnsafe() ? PlatformDependent0.getByte(data, index) : data[toIntExact(index)];
     }
 
     public static short getShort(byte[] data, int index) {
-        return PlatformDependent0.getShort(data, index);
+        return hasUnsafe() ? PlatformDependent0.getShort(data, index) : data[index];
     }
 
     public static int getInt(byte[] data, int index) {
-        return PlatformDependent0.getInt(data, index);
+        return hasUnsafe() ? PlatformDependent0.getInt(data, index) : data[index];
     }
 
     public static int getInt(int[] data, long index) {
-        return PlatformDependent0.getInt(data, index);
+        return hasUnsafe() ? PlatformDependent0.getInt(data, index) : data[toIntExact(index)];
     }
 
     public static long getLong(byte[] data, int index) {
-        return PlatformDependent0.getLong(data, index);
+        return hasUnsafe() ? PlatformDependent0.getLong(data, index) : data[index];
     }
 
     public static long getLong(long[] data, long index) {
-        return PlatformDependent0.getLong(data, index);
+        return hasUnsafe() ? PlatformDependent0.getLong(data, index) : data[toIntExact(index)];
+    }
+
+    private static int toIntExact(long value) {
+        if (javaVersion() >= 8) {
+            return toIntExact8(value);
+        }
+        int result = (int) value;
+        if (result != value) {
+            throw new ArithmeticException("Cannot convert to exact int: " + value);
+        }
+        return result;
+    }
+
+    @SuppressJava6Requirement(reason = "version checked")
+    private static int toIntExact8(long value) {
+        return Math.toIntExact(value);
     }
 
     private static long getLongSafe(byte[] bytes, int offset) {
@@ -928,7 +965,7 @@ public final class PlatformDependent {
      * The resulting hash code will be case insensitive.
      */
     public static int hashCodeAscii(byte[] bytes, int startPos, int length) {
-        return !hasUnsafe() || !unalignedAccess() ?
+        return !hasUnsafe() || !unalignedAccess() || BIG_ENDIAN_NATIVE_ORDER ?
                 hashCodeAsciiSafe(bytes, startPos, length) :
                 PlatformDependent0.hashCodeAscii(bytes, startPos, length);
     }
@@ -1072,6 +1109,23 @@ public final class PlatformDependent {
      */
     public static <T> Queue<T> newFixedMpscQueue(int capacity) {
         return hasUnsafe() ? new MpscArrayQueue<T>(capacity) : new MpscAtomicArrayQueue<T>(capacity);
+    }
+
+    /**
+     * Create a new un-padded {@link Queue} which is safe to use for multiple producers (different threads) and a single
+     * consumer (one thread!) with the given fixes {@code capacity}.<br>
+     * This should be preferred to {@link #newFixedMpscQueue(int)} when the queue is not to be heavily contended.
+     */
+    public static <T> Queue<T> newFixedMpscUnpaddedQueue(int capacity) {
+        return hasUnsafe() ? new MpscUnpaddedArrayQueue<T>(capacity) : new MpscAtomicUnpaddedArrayQueue<T>(capacity);
+    }
+
+    /**
+     * Create a new {@link Queue} which is safe to use for multiple producers (different threads) and multiple
+     * consumers with the given fixes {@code capacity}.
+     */
+    public static <T> Queue<T> newFixedMpmcQueue(int capacity) {
+        return hasUnsafe() ? new MpmcArrayQueue<T>(capacity) : new MpmcAtomicArrayQueue<T>(capacity);
     }
 
     /**

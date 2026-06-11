@@ -16,6 +16,7 @@
 package io.netty.util;
 
 import io.netty.util.NetUtilInitializations.NetworkIfaceAndInetAddress;
+import io.netty.util.internal.BoundedInputStream;
 import io.netty.util.internal.PlatformDependent;
 import io.netty.util.internal.StringUtil;
 import io.netty.util.internal.SystemPropertyUtil;
@@ -24,7 +25,7 @@ import io.netty.util.internal.logging.InternalLoggerFactory;
 
 import java.io.BufferedReader;
 import java.io.File;
-import java.io.FileReader;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -173,8 +174,16 @@ public final class NetUtil {
             // Determine the default somaxconn (server socket backlog) value of the platform.
             // The known defaults:
             // - Windows NT Server 4.0+: 200
-            // - Linux and Mac OS X: 128
-            int somaxconn = PlatformDependent.isWindows() ? 200 : 128;
+            // - Mac OS X: 128
+            // - Linux kernel > 5.4 : 4096
+            int somaxconn;
+            if (PlatformDependent.isWindows()) {
+                somaxconn = 200;
+            } else if (PlatformDependent.isOsx()) {
+                somaxconn = 128;
+            } else {
+                somaxconn = 4096;
+            }
             File file = new File("/proc/sys/net/core/somaxconn");
             BufferedReader in = null;
             try {
@@ -182,7 +191,8 @@ public final class NetUtil {
                 // try / catch block.
                 // See https://github.com/netty/netty/issues/4936
                 if (file.exists()) {
-                    in = new BufferedReader(new FileReader(file));
+                    in = new BufferedReader(new InputStreamReader(
+                            new BoundedInputStream(new FileInputStream(file))));
                     somaxconn = Integer.parseInt(in.readLine());
                     if (logger.isDebugEnabled()) {
                         logger.debug("{}: {}", file, somaxconn);
@@ -235,7 +245,7 @@ public final class NetUtil {
         try {
             // Suppress warnings about resource leaks since the buffered reader is closed below
             InputStream is = process.getInputStream();
-            InputStreamReader isr = new InputStreamReader(is);
+            InputStreamReader isr = new InputStreamReader(new BoundedInputStream(is));
             BufferedReader br = new BufferedReader(isr);
             try {
                 String line = br.readLine();

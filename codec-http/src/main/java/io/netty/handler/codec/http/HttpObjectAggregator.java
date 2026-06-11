@@ -158,14 +158,14 @@ public class HttpObjectAggregator
         }
     }
 
-    private static Object continueResponse(HttpMessage start, int maxContentLength, ChannelPipeline pipeline) {
+    private Object continueResponse(HttpMessage start, int maxContentLength, ChannelPipeline pipeline) {
         if (HttpUtil.isUnsupportedExpectation(start)) {
             // if the request contains an unsupported expectation, we return 417
             pipeline.fireUserEventTriggered(HttpExpectationFailedEvent.INSTANCE);
             return EXPECTATION_FAILED.retainedDuplicate();
         } else if (HttpUtil.is100ContinueExpected(start)) {
             // if the request contains 100-continue but the content-length is too large, we return 413
-            if (getContentLength(start, -1L) <= maxContentLength) {
+            if (!isContentLengthInvalid(start, maxContentLength)) {
                 return CONTINUE.retainedDuplicate();
             }
             pipeline.fireUserEventTriggered(HttpExpectationFailedEvent.INSTANCE);
@@ -247,7 +247,8 @@ public class HttpObjectAggregator
 
             // If the client started to send data already, close because it's impossible to recover.
             // If keep-alive is off and 'Expect: 100-continue' is missing, no need to leave the connection open.
-            if (oversized instanceof FullHttpMessage ||
+            // If auto read is false the channel must be closed or it will be stuck without a call to read()
+            if (oversized instanceof FullHttpMessage || !ctx.channel().config().isAutoRead() ||
                 !HttpUtil.is100ContinueExpected(oversized) && !HttpUtil.isKeepAlive(oversized)) {
                 ChannelFuture future = ctx.writeAndFlush(TOO_LARGE_CLOSE.retainedDuplicate());
                 future.addListener(new ChannelFutureListener() {

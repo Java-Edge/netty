@@ -20,7 +20,6 @@ import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpStatusClass;
 import io.netty.handler.codec.http.HttpUtil;
 import io.netty.handler.codec.http2.Http2Connection.Endpoint;
-import io.netty.util.internal.UnstableApi;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 
@@ -51,7 +50,6 @@ import static java.lang.Math.min;
  * This interface enforces inbound flow control functionality through
  * {@link Http2LocalFlowController}
  */
-@UnstableApi
 public class DefaultHttp2ConnectionDecoder implements Http2ConnectionDecoder {
     private static final InternalLogger logger = InternalLoggerFactory.getInstance(DefaultHttp2ConnectionDecoder.class);
     private Http2FrameListener internalFrameListener = new PrefaceFrameListener();
@@ -106,7 +104,7 @@ public class DefaultHttp2ConnectionDecoder implements Http2ConnectionDecoder {
                                          Http2PromisedRequestVerifier requestVerifier,
                                          boolean autoAckSettings,
                                          boolean autoAckPing) {
-        this(connection, encoder, frameReader, requestVerifier, autoAckSettings, true, true);
+        this(connection, encoder, frameReader, requestVerifier, autoAckSettings, autoAckPing, true);
     }
 
     /**
@@ -230,11 +228,6 @@ public class DefaultHttp2ConnectionDecoder implements Http2ConnectionDecoder {
             throws Http2Exception {
         listener.onGoAwayRead(ctx, lastStreamId, errorCode, debugData);
         connection.goAwayReceived(lastStreamId, errorCode, debugData);
-    }
-
-    void onUnknownFrame0(ChannelHandlerContext ctx, byte frameType, int streamId, Http2Flags flags,
-            ByteBuf payload) throws Http2Exception {
-        listener.onUnknownFrame(ctx, frameType, streamId, flags, payload);
     }
 
     // See https://tools.ietf.org/html/rfc7540#section-8.1.2.6
@@ -630,7 +623,12 @@ public class DefaultHttp2ConnectionDecoder implements Http2ConnectionDecoder {
         @Override
         public void onUnknownFrame(ChannelHandlerContext ctx, byte frameType, int streamId, Http2Flags flags,
                 ByteBuf payload) throws Http2Exception {
-            onUnknownFrame0(ctx, frameType, streamId, flags, payload);
+            Http2Stream stream = connection.stream(streamId);
+            if (stream == null) {
+                return;
+            }
+
+            listener.onUnknownFrame(ctx, frameType, streamId, flags, payload);
         }
 
         /**
@@ -801,7 +799,8 @@ public class DefaultHttp2ConnectionDecoder implements Http2ConnectionDecoder {
         @Override
         public void onUnknownFrame(ChannelHandlerContext ctx, byte frameType, int streamId, Http2Flags flags,
                 ByteBuf payload) throws Http2Exception {
-            onUnknownFrame0(ctx, frameType, streamId, flags, payload);
+            verifyPrefaceReceived();
+            internalFrameListener.onUnknownFrame(ctx, frameType, streamId, flags, payload);
         }
     }
 

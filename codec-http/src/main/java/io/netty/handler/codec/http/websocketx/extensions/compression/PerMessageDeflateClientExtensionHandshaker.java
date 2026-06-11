@@ -42,12 +42,26 @@ public final class PerMessageDeflateClientExtensionHandshaker implements WebSock
     private final boolean allowClientNoContext;
     private final boolean requestedServerNoContext;
     private final WebSocketExtensionFilterProvider extensionFilterProvider;
+    private final int maxAllocation;
 
     /**
      * Constructor with default configuration.
+     * @deprecated
+     *            Use {@link PerMessageDeflateClientExtensionHandshaker#
+     *            PerMessageDeflateClientExtensionHandshaker(int)}.
      */
+    @Deprecated
     public PerMessageDeflateClientExtensionHandshaker() {
-        this(6, ZlibCodecFactory.isSupportingWindowSizeAndMemLevel(), MAX_WINDOW_SIZE, false, false);
+        this(0);
+    }
+
+    /**
+     * Constructor with default configuration.
+     * @param maxAllocation
+     *            Maximum size of the decompression buffer. Must be &gt;= 0. If zero, maximum size is not limited.
+     */
+    public PerMessageDeflateClientExtensionHandshaker(int maxAllocation) {
+        this(6, ZlibCodecFactory.isSupportingWindowSizeAndMemLevel(), MAX_WINDOW_SIZE, false, false, maxAllocation);
     }
 
     /**
@@ -66,12 +80,43 @@ public final class PerMessageDeflateClientExtensionHandshaker implements WebSock
      * @param requestedServerNoContext
      *            indicates if client needs to activate server_no_context_takeover
      *            if server is compatible with (default is false).
+     * @deprecated
+     *            Use {@link PerMessageDeflateClientExtensionHandshaker#PerMessageDeflateClientExtensionHandshaker(
+     *            int, boolean, int, boolean, boolean, int)}.
+     */
+    @Deprecated
+    public PerMessageDeflateClientExtensionHandshaker(int compressionLevel,
+                                                      boolean allowClientWindowSize, int requestedServerWindowSize,
+                                                      boolean allowClientNoContext, boolean requestedServerNoContext) {
+        this(compressionLevel, allowClientWindowSize, requestedServerWindowSize, allowClientNoContext,
+             requestedServerNoContext, 0);
+    }
+
+    /**
+     * Constructor with custom configuration.
+     *
+     * @param compressionLevel
+     *            Compression level between 0 and 9 (default is 6).
+     * @param allowClientWindowSize
+     *            allows WebSocket server to customize the client inflater window size
+     *            (default is false).
+     * @param requestedServerWindowSize
+     *            indicates the requested sever window size to use if server inflater is customizable.
+     * @param allowClientNoContext
+     *            allows WebSocket server to activate client_no_context_takeover
+     *            (default is false).
+     * @param requestedServerNoContext
+     *            indicates if client needs to activate server_no_context_takeover
+     *            if server is compatible with (default is false).
+     * @param maxAllocation
+     *            Maximum size of the decompression buffer. Must be &gt;= 0. If zero, maximum size is not limited.
      */
     public PerMessageDeflateClientExtensionHandshaker(int compressionLevel,
             boolean allowClientWindowSize, int requestedServerWindowSize,
-            boolean allowClientNoContext, boolean requestedServerNoContext) {
+            boolean allowClientNoContext, boolean requestedServerNoContext,
+            int maxAllocation) {
         this(compressionLevel, allowClientWindowSize, requestedServerWindowSize,
-             allowClientNoContext, requestedServerNoContext, WebSocketExtensionFilterProvider.DEFAULT);
+             allowClientNoContext, requestedServerNoContext, WebSocketExtensionFilterProvider.DEFAULT, maxAllocation);
     }
 
     /**
@@ -92,11 +137,45 @@ public final class PerMessageDeflateClientExtensionHandshaker implements WebSock
      *            if server is compatible with (default is false).
      * @param extensionFilterProvider
      *            provides client extension filters for per message deflate encoder and decoder.
+     * @deprecated
+     *            Use {@link PerMessageDeflateClientExtensionHandshaker#PerMessageDeflateClientExtensionHandshaker(
+     *            int, boolean, int, boolean, boolean, WebSocketExtensionFilterProvider, int)}.
+     */
+    @Deprecated
+    public PerMessageDeflateClientExtensionHandshaker(int compressionLevel,
+                                                      boolean allowClientWindowSize, int requestedServerWindowSize,
+                                                      boolean allowClientNoContext, boolean requestedServerNoContext,
+                                                      WebSocketExtensionFilterProvider extensionFilterProvider) {
+        this(compressionLevel, allowClientWindowSize, requestedServerWindowSize,
+                allowClientNoContext, requestedServerNoContext, extensionFilterProvider, 0);
+    }
+
+    /**
+     * Constructor with custom configuration.
+     *
+     * @param compressionLevel
+     *            Compression level between 0 and 9 (default is 6).
+     * @param allowClientWindowSize
+     *            allows WebSocket server to customize the client inflater window size
+     *            (default is false).
+     * @param requestedServerWindowSize
+     *            indicates the requested sever window size to use if server inflater is customizable.
+     * @param allowClientNoContext
+     *            allows WebSocket server to activate client_no_context_takeover
+     *            (default is false).
+     * @param requestedServerNoContext
+     *            indicates if client needs to activate server_no_context_takeover
+     *            if server is compatible with (default is false).
+     * @param extensionFilterProvider
+     *            provides client extension filters for per message deflate encoder and decoder.
+     * @param maxAllocation
+     *            Maximum size of the decompression buffer. Must be &gt;= 0. If zero, maximum size is not limited.
      */
     public PerMessageDeflateClientExtensionHandshaker(int compressionLevel,
             boolean allowClientWindowSize, int requestedServerWindowSize,
             boolean allowClientNoContext, boolean requestedServerNoContext,
-            WebSocketExtensionFilterProvider extensionFilterProvider) {
+            WebSocketExtensionFilterProvider extensionFilterProvider,
+            int maxAllocation) {
 
         if (requestedServerWindowSize > MAX_WINDOW_SIZE || requestedServerWindowSize < MIN_WINDOW_SIZE) {
             throw new IllegalArgumentException(
@@ -112,6 +191,7 @@ public final class PerMessageDeflateClientExtensionHandshaker implements WebSock
         this.allowClientNoContext = allowClientNoContext;
         this.requestedServerNoContext = requestedServerNoContext;
         this.extensionFilterProvider = checkNotNull(extensionFilterProvider, "extensionFilterProvider");
+        this.maxAllocation = checkPositiveOrZero(maxAllocation, "maxAllocation");
     }
 
     @Override
@@ -152,10 +232,16 @@ public final class PerMessageDeflateClientExtensionHandshaker implements WebSock
             if (CLIENT_MAX_WINDOW.equalsIgnoreCase(parameter.getKey())) {
                 // allowed client_window_size_bits
                 if (allowClientWindowSize) {
-                    clientWindowSize = Integer.parseInt(parameter.getValue());
-                    if (clientWindowSize > MAX_WINDOW_SIZE || clientWindowSize < MIN_WINDOW_SIZE) {
-                        succeed = false;
+                    // RFC 7692: client_max_window_bits may have a value or no value
+                    String value = parameter.getValue();
+                    if (value != null) {
+                        // Let NumberFormatException bubble up if value is invalid
+                        clientWindowSize = Integer.parseInt(value);
+                        if (clientWindowSize > MAX_WINDOW_SIZE || clientWindowSize < MIN_WINDOW_SIZE) {
+                            succeed = false;
+                        }
                     }
+                    // If value is null, keep MAX_WINDOW_SIZE (default)
                 } else {
                     succeed = false;
                 }
@@ -188,7 +274,7 @@ public final class PerMessageDeflateClientExtensionHandshaker implements WebSock
 
         if (succeed) {
             return new PermessageDeflateExtension(serverNoContext, serverWindowSize,
-                    clientNoContext, clientWindowSize, extensionFilterProvider);
+                    clientNoContext, clientWindowSize, extensionFilterProvider, maxAllocation);
         } else {
             return null;
         }
@@ -201,6 +287,7 @@ public final class PerMessageDeflateClientExtensionHandshaker implements WebSock
         private final boolean clientNoContext;
         private final int clientWindowSize;
         private final WebSocketExtensionFilterProvider extensionFilterProvider;
+        private final int maxAllocation;
 
         @Override
         public int rsv() {
@@ -209,12 +296,13 @@ public final class PerMessageDeflateClientExtensionHandshaker implements WebSock
 
         PermessageDeflateExtension(boolean serverNoContext, int serverWindowSize,
                 boolean clientNoContext, int clientWindowSize,
-                WebSocketExtensionFilterProvider extensionFilterProvider) {
+                WebSocketExtensionFilterProvider extensionFilterProvider, int maxAllocation) {
             this.serverNoContext = serverNoContext;
             this.serverWindowSize = serverWindowSize;
             this.clientNoContext = clientNoContext;
             this.clientWindowSize = clientWindowSize;
             this.extensionFilterProvider = extensionFilterProvider;
+            this.maxAllocation = maxAllocation;
         }
 
         @Override
@@ -225,7 +313,8 @@ public final class PerMessageDeflateClientExtensionHandshaker implements WebSock
 
         @Override
         public WebSocketExtensionDecoder newExtensionDecoder() {
-            return new PerMessageDeflateDecoder(serverNoContext, extensionFilterProvider.decoderFilter());
+            return new PerMessageDeflateDecoder(serverNoContext, extensionFilterProvider.decoderFilter(),
+                                                maxAllocation);
         }
     }
 

@@ -48,6 +48,8 @@ import java.util.List;
 import java.util.ListIterator;
 import java.util.Map;
 import java.util.regex.Pattern;
+import java.util.Locale;
+import java.util.concurrent.ThreadLocalRandom;
 
 import static io.netty.buffer.Unpooled.wrappedBuffer;
 import static io.netty.util.internal.ObjectUtil.checkNotNull;
@@ -760,7 +762,12 @@ public class HttpPostRequestEncoder implements ChunkedInput<HttpContent> {
             headers.remove(HttpHeaderNames.CONTENT_TYPE);
             for (String contentType : contentTypes) {
                 // "multipart/form-data; boundary=--89421926422648"
-                String lowercased = contentType.toLowerCase();
+                // toLowerCase() without a Locale would corrupt the comparison under Turkish
+                // (tr_TR) locale, where 'I' -> 'ı' (U+0131): a request that sets
+                // Content-Type: MULTIPART/form-data would lowercase to "multıpart/form-data" and
+                // miss the prefix check, leaving the original header in place alongside the
+                // multipart one this encoder is about to add.
+                String lowercased = contentType.toLowerCase(Locale.US);
                 if (lowercased.startsWith(HttpHeaderValues.MULTIPART_FORM_DATA.toString()) ||
                         lowercased.startsWith(HttpHeaderValues.APPLICATION_X_WWW_FORM_URLENCODED.toString())) {
                     // ignore
@@ -969,11 +976,13 @@ public class HttpPostRequestEncoder implements ChunkedInput<HttpContent> {
         ByteBuf delimiter = null;
         if (buffer.readableBytes() < size) {
             isKey = true;
+            currentData = null;
             delimiter = iterator.hasNext() ? wrappedBuffer("&".getBytes(charset)) : null;
         }
 
         // End for current InterfaceHttpData, need potentially more data
         if (buffer.capacity() == 0) {
+            isKey = true;
             currentData = null;
             if (currentBuffer == null) {
                 if (delimiter == null) {
@@ -1008,15 +1017,10 @@ public class HttpPostRequestEncoder implements ChunkedInput<HttpContent> {
             }
         }
 
-        // end for current InterfaceHttpData, need more data
-        if (currentBuffer.readableBytes() < HttpPostBodyUtil.chunkSize) {
-            currentData = null;
-            isKey = true;
-            return null;
+        if (currentBuffer.readableBytes() >= HttpPostBodyUtil.chunkSize) {
+            return new DefaultHttpContent(fillByteBuf());
         }
-
-        buffer = fillByteBuf();
-        return new DefaultHttpContent(buffer);
+        return null;
     }
 
     @Override

@@ -40,11 +40,9 @@ import java.util.Queue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
-import static org.hamcrest.CoreMatchers.instanceOf;
-import static org.hamcrest.CoreMatchers.is;
-import static org.hamcrest.MatcherAssert.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -67,6 +65,11 @@ public class HttpContentDecoderTest {
             -110, 82, -41, 102, -89, 20, 11, 10, -68, -31, 96, -116, -55, -80, -31, -91, 96, -64, 83, 51,
             -39, 13, -21, 92, -16, -119, 124, -31, 18, 78, -1, 91, 82, 105, -116, -95, -22, -11, -70, -45, 0};
 
+    private static final byte[] SAMPLE_ZSTD_BYTES = new byte[]{40, -75, 47, -3, 32, 73, 45, 2, 0, 2, -124, 14,
+            22, -112, -75, 109, 11, -112, 113, 101, -65, 53, 59, -25, -51, -51, -78, 40, -120, -69, -32, 110, -7,
+            -81, 28, -90, -112, 3, -23, -38, -89, -113, -98, 75, -32, -114, 1, 63, 38, 27, 97, -80, -23, -107, 66,
+            -119, 17, 47, -109, 9, 91, -80, -10, -122, -13, 108, 92, 22, -15, 69, 2, 0, 53, -27, 55, -125, 89, 6};
+
     @Test
     public void testBinaryDecompression() throws Exception {
         // baseline test: zlib library and test helpers work correctly.
@@ -85,7 +88,7 @@ public class HttpContentDecoderTest {
     public void testRequestDecompression() {
         // baseline test: request decoder, content decompressor && request aggregator work as expected
         HttpRequestDecoder decoder = new HttpRequestDecoder();
-        HttpContentDecoder decompressor = new HttpContentDecompressor();
+        HttpContentDecoder decompressor = new HttpContentDecompressor(0);
         HttpObjectAggregator aggregator = new HttpObjectAggregator(1024);
         EmbeddedChannel channel = new EmbeddedChannel(decoder, decompressor, aggregator);
 
@@ -97,7 +100,7 @@ public class HttpContentDecoderTest {
         assertTrue(channel.writeInbound(buf));
 
         Object o = channel.readInbound();
-        assertThat(o, is(instanceOf(FullHttpRequest.class)));
+        assertInstanceOf(FullHttpRequest.class, o);
         FullHttpRequest req = (FullHttpRequest) o;
         assertEquals(HELLO_WORLD.length(), req.headers().getInt(HttpHeaderNames.CONTENT_LENGTH).intValue());
         assertEquals(HELLO_WORLD, req.content().toString(CharsetUtil.US_ASCII));
@@ -111,7 +114,7 @@ public class HttpContentDecoderTest {
     @Test
     public void testChunkedRequestDecompression() {
         HttpResponseDecoder decoder = new HttpResponseDecoder();
-        HttpContentDecoder decompressor = new HttpContentDecompressor();
+        HttpContentDecoder decompressor = new HttpContentDecompressor(0);
 
         EmbeddedChannel channel = new EmbeddedChannel(decoder, decompressor, null);
 
@@ -130,16 +133,16 @@ public class HttpContentDecoderTest {
         assertTrue(channel.writeInbound(Unpooled.copiedBuffer("My-Trailer: 42\r\n\r\n\r\n", CharsetUtil.US_ASCII)));
 
         Object ob1 = channel.readInbound();
-        assertThat(ob1, is(instanceOf(DefaultHttpResponse.class)));
+        assertInstanceOf(DefaultHttpResponse.class, ob1);
 
         Object ob2 = channel.readInbound();
-        assertThat(ob2, is(instanceOf(HttpContent.class)));
+        assertInstanceOf(HttpContent.class, ob2);
         HttpContent content = (HttpContent) ob2;
         assertEquals(HELLO_WORLD, content.content().toString(CharsetUtil.US_ASCII));
         content.release();
 
         Object ob3 = channel.readInbound();
-        assertThat(ob3, is(instanceOf(LastHttpContent.class)));
+        assertInstanceOf(LastHttpContent.class, ob3);
         LastHttpContent lastContent = (LastHttpContent) ob3;
         assertNotNull(lastContent.decoderResult());
         assertTrue(lastContent.decoderResult().isSuccess());
@@ -154,7 +157,7 @@ public class HttpContentDecoderTest {
     public void testSnappyResponseDecompression() {
         // baseline test: response decoder, content decompressor && request aggregator work as expected
         HttpResponseDecoder decoder = new HttpResponseDecoder();
-        HttpContentDecoder decompressor = new HttpContentDecompressor();
+        HttpContentDecoder decompressor = new HttpContentDecompressor(0);
         HttpObjectAggregator aggregator = new HttpObjectAggregator(1024);
         EmbeddedChannel channel = new EmbeddedChannel(decoder, decompressor, aggregator);
 
@@ -166,7 +169,7 @@ public class HttpContentDecoderTest {
         assertTrue(channel.writeInbound(buf));
 
         Object o = channel.readInbound();
-        assertThat(o, is(instanceOf(FullHttpResponse.class)));
+        assertInstanceOf(FullHttpResponse.class, o);
         FullHttpResponse resp = (FullHttpResponse) o;
         assertEquals(HELLO_WORLD.length(), resp.headers().getInt(HttpHeaderNames.CONTENT_LENGTH).intValue());
         assertEquals(HELLO_WORLD, resp.content().toString(CharsetUtil.UTF_8));
@@ -181,7 +184,7 @@ public class HttpContentDecoderTest {
     public void testResponseDecompression() {
         // baseline test: response decoder, content decompressor && request aggregator work as expected
         HttpResponseDecoder decoder = new HttpResponseDecoder();
-        HttpContentDecoder decompressor = new HttpContentDecompressor();
+        HttpContentDecoder decompressor = new HttpContentDecompressor(0);
         HttpObjectAggregator aggregator = new HttpObjectAggregator(1024);
 
         EmbeddedChannel channel = new EmbeddedChannel(decoder, decompressor, aggregator);
@@ -194,7 +197,7 @@ public class HttpContentDecoderTest {
         assertTrue(channel.writeInbound(buf));
 
         Object o = channel.readInbound();
-        assertThat(o, is(instanceOf(FullHttpResponse.class)));
+        assertInstanceOf(FullHttpResponse.class, o);
         FullHttpResponse resp = (FullHttpResponse) o;
         assertEquals(HELLO_WORLD.length(), resp.headers().getInt(HttpHeaderNames.CONTENT_LENGTH).intValue());
         assertEquals(HELLO_WORLD, resp.content().toString(CharsetUtil.US_ASCII));
@@ -211,7 +214,7 @@ public class HttpContentDecoderTest {
         Brotli.ensureAvailability();
 
         HttpResponseDecoder decoder = new HttpResponseDecoder();
-        HttpContentDecoder decompressor = new HttpContentDecompressor();
+        HttpContentDecoder decompressor = new HttpContentDecompressor(0);
         HttpObjectAggregator aggregator = new HttpObjectAggregator(Integer.MAX_VALUE);
         EmbeddedChannel channel = new EmbeddedChannel(decoder, decompressor, aggregator);
 
@@ -223,7 +226,7 @@ public class HttpContentDecoderTest {
         assertTrue(channel.writeInbound(buf));
 
         Object o = channel.readInbound();
-        assertThat(o, is(instanceOf(FullHttpResponse.class)));
+        assertInstanceOf(FullHttpResponse.class, o);
         FullHttpResponse resp = (FullHttpResponse) o;
         assertNull(resp.headers().get(HttpHeaderNames.CONTENT_ENCODING), "Content-Encoding header should be removed");
         assertEquals(SAMPLE_STRING, resp.content().toString(CharsetUtil.UTF_8),
@@ -241,7 +244,7 @@ public class HttpContentDecoderTest {
         Brotli.ensureAvailability();
 
         HttpResponseDecoder decoder = new HttpResponseDecoder();
-        HttpContentDecoder decompressor = new HttpContentDecompressor();
+        HttpContentDecoder decompressor = new HttpContentDecompressor(0);
         HttpObjectAggregator aggregator = new HttpObjectAggregator(Integer.MAX_VALUE);
         EmbeddedChannel channel = new EmbeddedChannel(decoder, decompressor, aggregator);
 
@@ -265,7 +268,72 @@ public class HttpContentDecoderTest {
         }
 
         Object o = channel.readInbound();
-        assertThat(o, is(instanceOf(FullHttpResponse.class)));
+        assertInstanceOf(FullHttpResponse.class, o);
+        FullHttpResponse resp = (FullHttpResponse) o;
+        assertEquals(SAMPLE_STRING, resp.content().toString(CharsetUtil.UTF_8),
+                "Response body should match uncompressed string");
+        resp.release();
+
+        assertHasInboundMessages(channel, false);
+        assertHasOutboundMessages(channel, false);
+        assertFalse(channel.finish()); // assert that no messages are left in channel
+    }
+
+    @Test
+    public void testResponseZstdDecompression() throws Throwable {
+        HttpResponseDecoder decoder = new HttpResponseDecoder();
+        HttpContentDecoder decompressor = new HttpContentDecompressor(0);
+        HttpObjectAggregator aggregator = new HttpObjectAggregator(Integer.MAX_VALUE);
+        EmbeddedChannel channel = new EmbeddedChannel(decoder, decompressor, aggregator);
+
+        String headers = "HTTP/1.1 200 OK\r\n" +
+                "Content-Length: " + SAMPLE_ZSTD_BYTES.length + "\r\n" +
+                "Content-Encoding: zstd\r\n" +
+                "\r\n";
+        ByteBuf buf = Unpooled.wrappedBuffer(headers.getBytes(CharsetUtil.US_ASCII), SAMPLE_ZSTD_BYTES);
+        assertTrue(channel.writeInbound(buf));
+
+        Object o = channel.readInbound();
+        assertInstanceOf(FullHttpResponse.class, o);
+        FullHttpResponse resp = (FullHttpResponse) o;
+        assertNull(resp.headers().get(HttpHeaderNames.CONTENT_ENCODING), "Content-Encoding header should be removed");
+        assertEquals(SAMPLE_STRING, resp.content().toString(CharsetUtil.UTF_8),
+                "Response body should match uncompressed string");
+        resp.release();
+
+        assertHasInboundMessages(channel, false);
+        assertHasOutboundMessages(channel, false);
+        assertFalse(channel.finish()); // assert that no messages are left in channel
+    }
+
+    @Test
+    public void testResponseChunksZstdDecompression() throws Throwable {
+        HttpResponseDecoder decoder = new HttpResponseDecoder();
+        HttpContentDecoder decompressor = new HttpContentDecompressor(0);
+        HttpObjectAggregator aggregator = new HttpObjectAggregator(Integer.MAX_VALUE);
+        EmbeddedChannel channel = new EmbeddedChannel(decoder, decompressor, aggregator);
+
+        String headers = "HTTP/1.1 200 OK\r\n" +
+                "Content-Length: " + SAMPLE_ZSTD_BYTES.length + "\r\n" +
+                "Content-Encoding: zstd\r\n" +
+                "\r\n";
+
+        assertFalse(channel.writeInbound(Unpooled.wrappedBuffer(headers.getBytes(CharsetUtil.US_ASCII))));
+
+        int offset = 0;
+        while (offset < SAMPLE_ZSTD_BYTES.length) {
+            int len = Math.min(1500, SAMPLE_ZSTD_BYTES.length - offset);
+            boolean available = channel.writeInbound(Unpooled.wrappedBuffer(SAMPLE_ZSTD_BYTES, offset, len));
+            offset += 1500;
+            if (offset < SAMPLE_ZSTD_BYTES.length) {
+                assertFalse(available);
+            } else {
+                assertTrue(available);
+            }
+        }
+
+        Object o = channel.readInbound();
+        assertInstanceOf(FullHttpResponse.class, o);
         FullHttpResponse resp = (FullHttpResponse) o;
         assertEquals(SAMPLE_STRING, resp.content().toString(CharsetUtil.UTF_8),
           "Response body should match uncompressed string");
@@ -293,7 +361,7 @@ public class HttpContentDecoderTest {
         assertFalse(channel.writeInbound(Unpooled.wrappedBuffer(req.getBytes())));
 
         Object o = channel.readOutbound();
-        assertThat(o, is(instanceOf(FullHttpResponse.class)));
+        assertInstanceOf(FullHttpResponse.class, o);
         FullHttpResponse r = (FullHttpResponse) o;
         assertEquals(100, r.status().code());
         assertTrue(channel.writeInbound(Unpooled.copiedBuffer(GZ_HELLO_WORLD)));
@@ -309,7 +377,7 @@ public class HttpContentDecoderTest {
         // request with header "Expect: 100-continue" must be replied with one "100 Continue" response
         // case 2: contentDecoder is in chain, but the content is not encoded, should be no-op
         HttpRequestDecoder decoder = new HttpRequestDecoder();
-        HttpContentDecoder decompressor = new HttpContentDecompressor();
+        HttpContentDecoder decompressor = new HttpContentDecompressor(0);
         HttpObjectAggregator aggregator = new HttpObjectAggregator(1024);
         EmbeddedChannel channel = new EmbeddedChannel(decoder, decompressor, aggregator);
         String req = "POST / HTTP/1.1\r\n" +
@@ -319,7 +387,7 @@ public class HttpContentDecoderTest {
         assertFalse(channel.writeInbound(Unpooled.wrappedBuffer(req.getBytes())));
 
         Object o = channel.readOutbound();
-        assertThat(o, is(instanceOf(FullHttpResponse.class)));
+        assertInstanceOf(FullHttpResponse.class, o);
         FullHttpResponse r = (FullHttpResponse) o;
         assertEquals(100, r.status().code());
         r.release();
@@ -335,7 +403,7 @@ public class HttpContentDecoderTest {
         // request with header "Expect: 100-continue" must be replied with one "100 Continue" response
         // case 3: ContentDecoder is in chain and content is encoded
         HttpRequestDecoder decoder = new HttpRequestDecoder();
-        HttpContentDecoder decompressor = new HttpContentDecompressor();
+        HttpContentDecoder decompressor = new HttpContentDecompressor(0);
         HttpObjectAggregator aggregator = new HttpObjectAggregator(1024);
         EmbeddedChannel channel = new EmbeddedChannel(decoder, decompressor, aggregator);
         String req = "POST / HTTP/1.1\r\n" +
@@ -346,7 +414,7 @@ public class HttpContentDecoderTest {
         assertFalse(channel.writeInbound(Unpooled.wrappedBuffer(req.getBytes())));
 
         Object o = channel.readOutbound();
-        assertThat(o, is(instanceOf(FullHttpResponse.class)));
+        assertInstanceOf(FullHttpResponse.class, o);
         FullHttpResponse r = (FullHttpResponse) o;
         assertEquals(100, r.status().code());
         r.release();
@@ -363,7 +431,7 @@ public class HttpContentDecoderTest {
         // case 4: ObjectAggregator is up in chain
         HttpRequestDecoder decoder = new HttpRequestDecoder();
         HttpObjectAggregator aggregator = new HttpObjectAggregator(1024);
-        HttpContentDecoder decompressor = new HttpContentDecompressor();
+        HttpContentDecoder decompressor = new HttpContentDecompressor(0);
         EmbeddedChannel channel = new EmbeddedChannel(decoder, aggregator, decompressor);
         String req = "POST / HTTP/1.1\r\n" +
                      "Content-Length: " + GZ_HELLO_WORLD.length + "\r\n" +
@@ -373,7 +441,7 @@ public class HttpContentDecoderTest {
         assertFalse(channel.writeInbound(Unpooled.wrappedBuffer(req.getBytes())));
 
         Object o = channel.readOutbound();
-        assertThat(o, is(instanceOf(FullHttpResponse.class)));
+        assertInstanceOf(FullHttpResponse.class, o);
         FullHttpResponse r = (FullHttpResponse) o;
         assertEquals(100, r.status().code());
         r.release();
@@ -445,7 +513,7 @@ public class HttpContentDecoderTest {
 
         // force content to be in more than one chunk (5 bytes/chunk)
         HttpRequestDecoder decoder = new HttpRequestDecoder(4096, 4096, 5);
-        HttpContentDecoder decompressor = new HttpContentDecompressor();
+        HttpContentDecoder decompressor = new HttpContentDecompressor(0);
         EmbeddedChannel channel = new EmbeddedChannel(decoder, decompressor);
         String headers = "POST / HTTP/1.1\r\n" +
                          "Content-Length: " + GZ_HELLO_WORLD.length + "\r\n" +
@@ -457,7 +525,7 @@ public class HttpContentDecoderTest {
         Queue<Object> req = channel.inboundMessages();
         assertTrue(req.size() >= 1);
         Object o = req.peek();
-        assertThat(o, is(instanceOf(HttpRequest.class)));
+        assertInstanceOf(HttpRequest.class, o);
         HttpRequest r = (HttpRequest) o;
         String v = r.headers().get(HttpHeaderNames.CONTENT_LENGTH);
         Long value = v == null ? null : Long.parseLong(v);
@@ -474,7 +542,7 @@ public class HttpContentDecoderTest {
 
         // force content to be in more than one chunk (5 bytes/chunk)
         HttpRequestDecoder decoder = new HttpRequestDecoder(4096, 4096, 5);
-        HttpContentDecoder decompressor = new HttpContentDecompressor();
+        HttpContentDecoder decompressor = new HttpContentDecompressor(0);
         HttpObjectAggregator aggregator = new HttpObjectAggregator(1024);
         EmbeddedChannel channel = new EmbeddedChannel(decoder, decompressor, aggregator);
         String headers = "POST / HTTP/1.1\r\n" +
@@ -485,7 +553,7 @@ public class HttpContentDecoderTest {
         assertTrue(channel.writeInbound(buf));
 
         Object o = channel.readInbound();
-        assertThat(o, is(instanceOf(FullHttpRequest.class)));
+        assertInstanceOf(FullHttpRequest.class, o);
         FullHttpRequest r = (FullHttpRequest) o;
         String v = r.headers().get(HttpHeaderNames.CONTENT_LENGTH);
         Long value = v == null ? null : Long.parseLong(v);
@@ -506,7 +574,7 @@ public class HttpContentDecoderTest {
 
         // force content to be in more than one chunk (5 bytes/chunk)
         HttpResponseDecoder decoder = new HttpResponseDecoder(4096, 4096, 5);
-        HttpContentDecoder decompressor = new HttpContentDecompressor();
+        HttpContentDecoder decompressor = new HttpContentDecompressor(0);
         EmbeddedChannel channel = new EmbeddedChannel(decoder, decompressor);
         String headers = "HTTP/1.1 200 OK\r\n" +
                          "Content-Length: " + GZ_HELLO_WORLD.length + "\r\n" +
@@ -518,7 +586,7 @@ public class HttpContentDecoderTest {
         Queue<Object> resp = channel.inboundMessages();
         assertTrue(resp.size() >= 1);
         Object o = resp.peek();
-        assertThat(o, is(instanceOf(HttpResponse.class)));
+        assertInstanceOf(HttpResponse.class, o);
         HttpResponse r = (HttpResponse) o;
 
         assertFalse(r.headers().contains(HttpHeaderNames.CONTENT_LENGTH), "Content-Length header not removed.");
@@ -538,7 +606,7 @@ public class HttpContentDecoderTest {
 
         // force content to be in more than one chunk (5 bytes/chunk)
         HttpResponseDecoder decoder = new HttpResponseDecoder(4096, 4096, 5);
-        HttpContentDecoder decompressor = new HttpContentDecompressor();
+        HttpContentDecoder decompressor = new HttpContentDecompressor(0);
         HttpObjectAggregator aggregator = new HttpObjectAggregator(1024);
         EmbeddedChannel channel = new EmbeddedChannel(decoder, decompressor, aggregator);
         String headers = "HTTP/1.1 200 OK\r\n" +
@@ -549,7 +617,7 @@ public class HttpContentDecoderTest {
         assertTrue(channel.writeInbound(buf));
 
         Object o = channel.readInbound();
-        assertThat(o, is(instanceOf(FullHttpResponse.class)));
+        assertInstanceOf(FullHttpResponse.class, o);
         FullHttpResponse r = (FullHttpResponse) o;
         String v = r.headers().get(HttpHeaderNames.CONTENT_LENGTH);
         Long value = v == null ? null : Long.parseLong(v);
@@ -567,7 +635,7 @@ public class HttpContentDecoderTest {
         // test that ContentDecoder can be used after the ObjectAggregator
         HttpRequestDecoder decoder = new HttpRequestDecoder(4096, 4096, 5);
         HttpObjectAggregator aggregator = new HttpObjectAggregator(1024);
-        HttpContentDecoder decompressor = new HttpContentDecompressor();
+        HttpContentDecoder decompressor = new HttpContentDecompressor(0);
         EmbeddedChannel channel = new EmbeddedChannel(decoder, aggregator, decompressor);
         String headers = "POST / HTTP/1.1\r\n" +
                          "Content-Length: " + GZ_HELLO_WORLD.length + "\r\n" +
@@ -594,7 +662,7 @@ public class HttpContentDecoderTest {
         // test that ContentDecoder can be used after the ObjectAggregator
         HttpResponseDecoder decoder = new HttpResponseDecoder(4096, 4096, 5);
         HttpObjectAggregator aggregator = new HttpObjectAggregator(1024);
-        HttpContentDecoder decompressor = new HttpContentDecompressor();
+        HttpContentDecoder decompressor = new HttpContentDecompressor(0);
         EmbeddedChannel channel = new EmbeddedChannel(decoder, aggregator, decompressor);
         String headers = "HTTP/1.1 200 OK\r\n" +
                          "Content-Length: " + GZ_HELLO_WORLD.length + "\r\n" +
@@ -621,7 +689,7 @@ public class HttpContentDecoderTest {
     public void testFullHttpResponseEOF() {
         // test that ContentDecoder can be used after the ObjectAggregator
         HttpResponseDecoder decoder = new HttpResponseDecoder(4096, 4096, 5);
-        HttpContentDecoder decompressor = new HttpContentDecompressor();
+        HttpContentDecoder decompressor = new HttpContentDecompressor(0);
         EmbeddedChannel channel = new EmbeddedChannel(decoder, decompressor);
         String headers = "HTTP/1.1 200 OK\r\n" +
                 "Content-Encoding: gzip\r\n" +
@@ -688,7 +756,7 @@ public class HttpContentDecoderTest {
                 "Transfer-Encoding: gzip\r\n" +
                 "\r\n";
         HttpRequestDecoder decoder = new HttpRequestDecoder();
-        HttpContentDecoder decompressor = new HttpContentDecompressor();
+        HttpContentDecoder decompressor = new HttpContentDecompressor(0);
         EmbeddedChannel channel = new EmbeddedChannel(decoder, decompressor);
 
         channel.writeInbound(Unpooled.copiedBuffer(requestStr.getBytes()));
@@ -722,7 +790,7 @@ public class HttpContentDecoderTest {
                 "Transfer-Encoding: gzip, chunked\r\n" +
                 "\r\n";
         HttpRequestDecoder decoder = new HttpRequestDecoder();
-        HttpContentDecoder decompressor = new HttpContentDecompressor();
+        HttpContentDecoder decompressor = new HttpContentDecompressor(0);
         EmbeddedChannel channel = new EmbeddedChannel(decoder, decompressor);
 
         assertTrue(channel.writeInbound(Unpooled.copiedBuffer(requestStr, CharsetUtil.US_ASCII)));
@@ -754,7 +822,7 @@ public class HttpContentDecoderTest {
     }
 
     private static byte[] gzDecompress(byte[] input) {
-        ZlibDecoder decoder = ZlibCodecFactory.newZlibDecoder(ZlibWrapper.GZIP);
+        ZlibDecoder decoder = ZlibCodecFactory.newZlibDecoder(ZlibWrapper.GZIP, 0);
         EmbeddedChannel channel = new EmbeddedChannel(decoder);
         assertTrue(channel.writeInbound(Unpooled.copiedBuffer(input)));
         assertTrue(channel.finish()); // close the channel to indicate end-of-data

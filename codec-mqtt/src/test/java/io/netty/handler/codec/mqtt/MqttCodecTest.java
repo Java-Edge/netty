@@ -21,8 +21,11 @@ import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.UnpooledByteBufAllocator;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.DecoderException;
 import io.netty.handler.codec.EncoderException;
+import io.netty.handler.codec.TooLongFrameException;
+import io.netty.handler.codec.mqtt.MqttReasonCodes.PubAck;
 import io.netty.util.Attribute;
 import io.netty.util.CharsetUtil;
 import io.netty.util.ReferenceCountUtil;
@@ -36,18 +39,30 @@ import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedList;
 import java.util.List;
 
+import static io.netty.handler.codec.mqtt.MqttProperties.MqttPropertyType.AUTHENTICATION_DATA;
+import static io.netty.handler.codec.mqtt.MqttProperties.MqttPropertyType.AUTHENTICATION_METHOD;
+import static io.netty.handler.codec.mqtt.MqttProperties.MqttPropertyType.MAXIMUM_PACKET_SIZE;
+import static io.netty.handler.codec.mqtt.MqttProperties.MqttPropertyType.MAXIMUM_QOS;
+import static io.netty.handler.codec.mqtt.MqttProperties.MqttPropertyType.PAYLOAD_FORMAT_INDICATOR;
+import static io.netty.handler.codec.mqtt.MqttProperties.MqttPropertyType.SESSION_EXPIRY_INTERVAL;
+import static io.netty.handler.codec.mqtt.MqttProperties.MqttPropertyType.SUBSCRIPTION_IDENTIFIER;
+import static io.netty.handler.codec.mqtt.MqttProperties.MqttPropertyType.USER_PROPERTY;
+import static io.netty.handler.codec.mqtt.MqttProperties.MqttPropertyType.WILL_DELAY_INTERVAL;
+import static io.netty.handler.codec.mqtt.MqttQoS.AT_LEAST_ONCE;
+import static io.netty.handler.codec.mqtt.MqttSubscriptionOption.RetainedHandlingPolicy.SEND_AT_SUBSCRIBE_IF_NOT_YET_EXISTS;
 import static io.netty.handler.codec.mqtt.MqttTestUtils.validateProperties;
 import static io.netty.handler.codec.mqtt.MqttTestUtils.validateSubscribePayload;
 import static io.netty.handler.codec.mqtt.MqttTestUtils.validateUnsubscribePayload;
-import static io.netty.handler.codec.mqtt.MqttProperties.MqttPropertyType.*;
-import static io.netty.handler.codec.mqtt.MqttQoS.AT_LEAST_ONCE;
-import static io.netty.handler.codec.mqtt.MqttSubscriptionOption.RetainedHandlingPolicy.SEND_AT_SUBSCRIBE_IF_NOT_YET_EXISTS;
-import static org.hamcrest.CoreMatchers.not;
+
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -58,8 +73,6 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
-import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.CoreMatchers.instanceOf;
 
 /**
  * Unit tests for MqttEncoder and MqttDecoder.
@@ -71,6 +84,7 @@ public class MqttCodecTest {
     private static final String WILL_MESSAGE = "gone";
     private static final String USER_NAME = "happy_user";
     private static final String PASSWORD = "123_or_no_pwd";
+    private static final byte[] PASSWORD_BYTES = PASSWORD.getBytes(CharsetUtil.UTF_8);
 
     private static final int KEEP_ALIVE_SECONDS = 600;
 
@@ -165,7 +179,7 @@ public class MqttCodecTest {
         final MqttMessage decodedMessage = (MqttMessage) out.get(0);
         assertTrue(decodedMessage.decoderResult().isFailure());
         Throwable cause = decodedMessage.decoderResult().cause();
-        assertThat(cause, instanceOf(DecoderException.class));
+        assertInstanceOf(DecoderException.class, cause);
         assertEquals("non-zero reserved flag", cause.getMessage());
     }
 
@@ -214,6 +228,16 @@ public class MqttCodecTest {
     }
 
     @Test
+    public void testConnectMessageForPassword311() throws Exception {
+        assertFalse(createConnectMessage(MqttVersion.MQTT_3_1).toString().contains(Arrays.toString(PASSWORD_BYTES)));
+    }
+
+    @Test
+    public void testConnectMessageForPassword5() throws Exception {
+        assertFalse(createConnectMessage(MqttVersion.MQTT_5).toString().contains(Arrays.toString(PASSWORD_BYTES)));
+    }
+
+    @Test
     public void testSubscribeMessageNonZeroReservedBit0Mqtt311() throws Exception {
         final MqttSubscribeMessage message = createSubscribeMessage();
         ByteBuf byteBuf = MqttEncoder.doEncode(ctx, message);
@@ -237,13 +261,30 @@ public class MqttCodecTest {
 
     private void checkForSingleDecoderException(final List<Object> out) {
         assertEquals(1, out.size());
-        assertThat(out.get(0), not(instanceOf(MqttConnectMessage.class)));
+        assertThat(out.get(0)).isNotInstanceOf(MqttConnectMessage.class);
         MqttMessage result = (MqttMessage) out.get(0);
-        assertThat(result.decoderResult().cause(), instanceOf(DecoderException.class));
+        assertInstanceOf(DecoderException.class, result.decoderResult().cause());
     }
 
     @Test
-    public void testConnectMessageNoPassword() throws Exception {
+    public void testConnectMessagePasswordOnlyForMqtt31() throws Exception {
+        final MqttConnectMessage message = createConnectMessage(
+                MqttVersion.MQTT_3_1,
+                null,
+                PASSWORD,
+                MqttProperties.NO_PROPERTIES,
+                MqttProperties.NO_PROPERTIES);
+
+        assertThrows(EncoderException.class, new Executable() {
+            @Override
+            public void execute() {
+                MqttEncoder.doEncode(ctx, message);
+            }
+        });
+    }
+
+    @Test
+    public void testConnectMessagePasswordOnlyForMqtt311() throws Exception {
         final MqttConnectMessage message = createConnectMessage(
                 MqttVersion.MQTT_3_1_1,
                 null,
@@ -257,6 +298,31 @@ public class MqttCodecTest {
                 MqttEncoder.doEncode(ctx, message);
             }
         });
+    }
+
+    @Test
+    public void testConnectMessagePasswordOnlyForMqtt5() throws Exception {
+        final MqttConnectMessage message = createConnectMessage(
+                MqttVersion.MQTT_5,
+                null,
+                PASSWORD,
+                MqttProperties.NO_PROPERTIES,
+                MqttProperties.NO_PROPERTIES);
+
+        assertFalse(message.variableHeader().hasUserName());
+        assertTrue(message.variableHeader().hasPassword());
+
+        ByteBuf byteBuf = MqttEncoder.doEncode(ctx, message);
+
+        mqttDecoder.channelRead(ctx, byteBuf);
+
+        assertEquals(1, out.size());
+
+        final MqttConnectMessage decodedMessage = (MqttConnectMessage) out.get(0);
+
+        validateFixedHeaders(message.fixedHeader(), decodedMessage.fixedHeader());
+        validateConnectVariableHeader(message.variableHeader(), decodedMessage.variableHeader());
+        validateConnectPayload(message.payload(), decodedMessage.payload());
     }
 
     @Test
@@ -286,6 +352,78 @@ public class MqttCodecTest {
         validateFixedHeaders(message.fixedHeader(), decodedMessage.fixedHeader());
         validatePublishVariableHeader(message.variableHeader(), decodedMessage.variableHeader());
         validatePublishPayload(message.payload(), decodedMessage.payload());
+    }
+
+    @Test
+    public void testPublishMessageIncompleteVariableHeaderDoesNotUseCumulationSizeForTooLongCheck() throws Exception {
+        // The leading PUBLISH is hand-crafted rather than going through MqttEncoder because the
+        // bug under test only triggers when variable-header decoding asks for REPLAY mid-message,
+        // which in turn requires a deliberately malformed packet (topic-name length prefix larger
+        // than the bytes we actually supply). MqttEncoder only produces well-formed messages.
+        final int maxBytesInMessage = 16;
+        // bytes after the fixed header; < 128 so it fits in a 1-byte Variable Byte Integer.
+        final int currentPacketRemainingLength = 10;
+        // > the bytes we write below, so the decoder must REPLAY mid-variable-header.
+        final int claimedTopicNameLength = 32;
+        final int followingPingReqPackets = 3;
+        EmbeddedChannel channel = new EmbeddedChannel(new MqttDecoder(maxBytesInMessage));
+        ByteBuf byteBuf = ALLOCATOR.buffer();
+        // Leading PUBLISH packet (incomplete - missing most of the topic name):
+        // Fixed header byte 1: PUBLISH (type 3), DUP=0, QoS=0, RETAIN=0.
+        byteBuf.writeByte(0x30);
+        // Fixed header remaining-length, encoded as a Variable Byte Integer (single byte for values < 128).
+        byteBuf.writeByte(currentPacketRemainingLength);
+        // Variable header: 2-byte topic-name length prefix.
+        byteBuf.writeShort(claimedTopicNameLength);
+        // ... + only 8 of the 32 topic-name bytes the prefix claims (so the decoder will ask for REPLAY).
+        byteBuf.writeZero(currentPacketRemainingLength - 2);
+        // Trailing PINGREQ packets - the cumulation bytes that the buggy size check used to look at.
+        // Each PINGREQ is just a 2-byte fixed header: 0xC0 (type 12, flags 0) and remaining-length 0.
+        for (int i = 0; i < followingPingReqPackets; i++) {
+            byteBuf.writeByte(0xC0);
+            byteBuf.writeByte(0);
+        }
+
+        try {
+            assertFalse(channel.writeInbound(byteBuf));
+            assertNull(channel.readInbound());
+        } finally {
+            channel.finishAndReleaseAll();
+        }
+    }
+
+    @Test
+    public void testPublishMessageIncompleteVariableHeaderStillFailsWhenCurrentPacketTooLarge() throws Exception {
+        // Same hand-crafting rationale as the test above: a malformed (incomplete-topic) PUBLISH
+        // is needed so variable-header decoding asks for REPLAY, which is the code path under test.
+        final int maxBytesInMessage = 16;
+        // Declared packet size already exceeds the limit; the in-flight check must still flag it.
+        final int currentPacketRemainingLength = maxBytesInMessage + 1;
+        // > the bytes we write below, so the decoder still asks for REPLAY mid-variable-header.
+        final int claimedTopicNameLength = 32;
+        EmbeddedChannel channel = new EmbeddedChannel(new MqttDecoder(maxBytesInMessage));
+        ByteBuf byteBuf = ALLOCATOR.buffer();
+        // Fixed header byte 1: PUBLISH (type 3), all flags 0.
+        byteBuf.writeByte(0x30);
+        // Fixed header remaining-length Variable Byte Integer: 17 (still a single byte since < 128).
+        byteBuf.writeByte(currentPacketRemainingLength);
+        // Variable header: 2-byte topic-name length prefix claiming 32 bytes.
+        byteBuf.writeShort(claimedTopicNameLength);
+        // ... + 14 zero bytes - fewer than the 32 claimed, so the decoder will ask for REPLAY.
+        byteBuf.writeZero(maxBytesInMessage - 2);
+
+        try {
+            assertTrue(channel.writeInbound(byteBuf));
+            MqttMessage decodedMessage = channel.readInbound();
+            try {
+                assertTrue(decodedMessage.decoderResult().isFailure());
+                assertInstanceOf(TooLongFrameException.class, decodedMessage.decoderResult().cause());
+            } finally {
+                ReferenceCountUtil.release(decodedMessage);
+            }
+        } finally {
+            channel.finishAndReleaseAll();
+        }
     }
 
     @Test
@@ -396,6 +534,41 @@ public class MqttCodecTest {
         testMessageWithOnlyFixedHeader(MqttMessage.DISCONNECT);
     }
 
+    @Test
+    public void testPingReqWithNonZeroRemainingLengthIsRejected() throws Exception {
+        // Regression for https://github.com/netty/netty/issues/16851: PINGREQ is a 2-byte
+        // fixed-header-only packet (0xC0 0x00). The bytes below claim Remaining Length 2,
+        // which makes the trailing 0xD0 0x00 part of the same (malformed) PINGREQ frame
+        // rather than a separate PINGRESP. The decoder must reject this as one invalid
+        // message rather than silently accept two.
+        EmbeddedChannel channel = new EmbeddedChannel(new MqttDecoder());
+        ByteBuf byteBuf = channel.alloc().buffer();
+        // Fixed header byte 1: PINGREQ (type 12), all flags 0.
+        byteBuf.writeByte(0xC0);
+        // Remaining Length 2 - invalid per MQTT 3.1.1 / 5.0 spec (PINGREQ has no variable
+        // header or payload, so Remaining Length must be 0).
+        byteBuf.writeByte(0x02);
+        // Two leftover bytes still inside the malformed packet's frame:
+        byteBuf.writeByte(0xD0);
+        byteBuf.writeByte(0x00);
+
+        try {
+            assertTrue(channel.writeInbound(byteBuf));
+            MqttMessage first = channel.readInbound();
+            try {
+                assertTrue(first.decoderResult().isFailure(),
+                        "expected a failed message for the malformed PINGREQ");
+                assertInstanceOf(DecoderException.class, first.decoderResult().cause());
+            } finally {
+                ReferenceCountUtil.release(first);
+            }
+            // No second message: the trailing bytes belong to the malformed frame.
+            assertNull(channel.readInbound());
+        } finally {
+            assertFalse(channel.finishAndReleaseAll());
+        }
+    }
+
     //All 0..F message type codes are valid in MQTT 5
     @Test
     public void testUnknownMessageType() throws Exception {
@@ -412,7 +585,7 @@ public class MqttCodecTest {
         final MqttMessage decodedMessage = (MqttMessage) out.get(0);
         assertTrue(decodedMessage.decoderResult().isFailure());
         Throwable cause = decodedMessage.decoderResult().cause();
-        assertThat(cause, instanceOf(DecoderException.class));
+        assertInstanceOf(DecoderException.class, cause);
         assertEquals("AUTH message requires at least MQTT 5", cause.getMessage());
     }
 
@@ -648,6 +821,25 @@ public class MqttCodecTest {
     }
 
     @Test
+    public void testPubAckMessageWithUserPropertyAndSuccessForMqtt5() throws Exception {
+        when(versionAttrMock.get()).thenReturn(MqttVersion.MQTT_5);
+
+        MqttProperties props = new MqttProperties();
+        props.add(new MqttProperties.UserProperty("traceId", "abc"));
+        final MqttMessage message = createPubAckMessage((byte) 0, props);
+        ByteBuf byteBuf = MqttEncoder.doEncode(ctx, message);
+
+        mqttDecoder.channelRead(ctx, byteBuf);
+
+        assertEquals(1, out.size());
+
+        final MqttMessage decodedMessage = (MqttMessage) out.get(0);
+        validateFixedHeaders(message.fixedHeader(), decodedMessage.fixedHeader());
+        validatePubReplyVariableHeader((MqttPubReplyMessageVariableHeader) message.variableHeader(),
+                (MqttPubReplyMessageVariableHeader) decodedMessage.variableHeader());
+    }
+
+    @Test
     public void testSubAckMessageForMqtt5() throws Exception {
         MqttProperties props = new MqttProperties();
         props.add(new MqttProperties.IntegerProperty(PAYLOAD_FORMAT_INDICATOR.value(), 6));
@@ -800,6 +992,28 @@ public class MqttCodecTest {
     }
 
     @Test
+    public void testDisconnectMessageWithUserPropertyAndSuccessForMqtt5() throws Exception {
+        when(versionAttrMock.get()).thenReturn(MqttVersion.MQTT_5);
+
+        MqttProperties props = new MqttProperties();
+        props.add(new MqttProperties.UserProperty("traceId", "abc"));
+        final MqttMessage message = MqttMessageBuilders.disconnect()
+                .reasonCode((byte) 0)
+                .properties(props)
+                .build();
+        ByteBuf byteBuf = MqttEncoder.doEncode(ctx, message);
+
+        mqttDecoder.channelRead(ctx, byteBuf);
+
+        assertEquals(1, out.size());
+        final MqttMessage decodedMessage = (MqttMessage) out.get(0);
+        validateFixedHeaders(message.fixedHeader(), decodedMessage.fixedHeader());
+        validateReasonCodeAndPropertiesVariableHeader(
+                (MqttReasonCodeAndPropertiesVariableHeader) message.variableHeader(),
+                (MqttReasonCodeAndPropertiesVariableHeader) decodedMessage.variableHeader());
+    }
+
+    @Test
     public void testAuthMessageForMqtt5() throws Exception {
         when(versionAttrMock.get()).thenReturn(MqttVersion.MQTT_5);
 
@@ -844,6 +1058,30 @@ public class MqttCodecTest {
         validateConnectPayload(connectMessage.payload(), decodedConnectMessage.payload());
 
         verifyNoMoreInteractions(versionAttrMock);
+    }
+
+    @Test
+    void testUnknownMessagePayload() throws Exception {
+        MqttMessage message = createPubAckMessage(PubAck.SUCCESS.byteValue(), null);
+
+        ByteBuf byteBuf = MqttEncoder.doEncode(ctx, message);
+        byteBuf.writeBytes("whatever".getBytes(CharsetUtil.UTF_8));
+
+        mqttDecoder.channelRead(ctx, byteBuf);
+
+        assertEquals(2, out.size());
+
+        final MqttMessage decodedMessage = (MqttMessage) out.get(0);
+        validateFixedHeaders(message.fixedHeader(), decodedMessage.fixedHeader());
+        validatePubReplyVariableHeader((MqttPubReplyMessageVariableHeader) message.variableHeader(),
+                                       (MqttPubReplyMessageVariableHeader) decodedMessage.variableHeader());
+        assertNull(decodedMessage.payload());
+
+        final MqttMessage failedMessage = (MqttMessage) out.get(1);
+        assertNull(failedMessage.fixedHeader());
+        assertNull(failedMessage.variableHeader());
+        assertNull(failedMessage.payload());
+        assertTrue(failedMessage.decoderResult().isFailure());
     }
 
     private void testMessageWithOnlyFixedHeader(MqttMessage message) throws Exception {
@@ -1067,9 +1305,7 @@ public class MqttCodecTest {
         assertNull(message.payload());
         assertTrue(message.decoderResult().isFailure());
         Throwable cause = message.decoderResult().cause();
-        assertThat(cause, instanceOf(DecoderException.class));
-
-        assertTrue(cause.getMessage().contains("too large message:"));
+        assertInstanceOf(TooLongFrameException.class, cause);
     }
 
     private static void validatePubReplyVariableHeader(

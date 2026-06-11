@@ -199,20 +199,24 @@ final class PoolThreadCache {
     }
 
     /**
-     *  Should be called if the Thread that uses this cache is about to exist to release resources out of the cache
+     *  Should be called if the Thread that uses this cache is about to exit to release resources out of the cache
      */
     void free(boolean finalizer) {
         // As free() may be called either by the finalizer or by FastThreadLocal.onRemoval(...) we need to ensure
         // we only call this one time.
         if (freed.compareAndSet(false, true)) {
+            if (freeOnFinalize != null) {
+                // Help GC: this can race with a finalizer thread, but will be null out regardless
+                freeOnFinalize.cache = null;
+            }
             int numFreed = free(smallSubPageDirectCaches, finalizer) +
-                    free(normalDirectCaches, finalizer) +
-                    free(smallSubPageHeapCaches, finalizer) +
-                    free(normalHeapCaches, finalizer);
+                           free(normalDirectCaches, finalizer) +
+                           free(smallSubPageHeapCaches, finalizer) +
+                           free(normalHeapCaches, finalizer);
 
             if (numFreed > 0 && logger.isDebugEnabled()) {
                 logger.debug("Freed {} thread-local buffer(s) from thread: {}", numFreed,
-                        Thread.currentThread().getName());
+                             Thread.currentThread().getName());
             }
 
             if (directArena != null) {
@@ -221,21 +225,6 @@ final class PoolThreadCache {
 
             if (heapArena != null) {
                 heapArena.numThreadCaches.getAndDecrement();
-            }
-        } else {
-            // See https://github.com/netty/netty/issues/12749
-            checkCacheMayLeak(smallSubPageDirectCaches, "SmallSubPageDirectCaches");
-            checkCacheMayLeak(normalDirectCaches, "NormalDirectCaches");
-            checkCacheMayLeak(smallSubPageHeapCaches, "SmallSubPageHeapCaches");
-            checkCacheMayLeak(normalHeapCaches, "NormalHeapCaches");
-        }
-    }
-
-    private static void checkCacheMayLeak(MemoryRegionCache<?>[] caches, String type) {
-        for (MemoryRegionCache<?> cache : caches) {
-            if (!cache.queue.isEmpty()) {
-                logger.debug("{} memory may leak.", type);
-                return;
             }
         }
     }
@@ -345,7 +334,7 @@ final class PoolThreadCache {
 
         MemoryRegionCache(int size, SizeClass sizeClass) {
             this.size = MathUtil.safeFindNextPositivePowerOfTwo(size);
-            queue = PlatformDependent.newFixedMpscQueue(this.size);
+            queue = PlatformDependent.newFixedMpscUnpaddedQueue(this.size);
             this.sizeClass = sizeClass;
         }
 
@@ -484,7 +473,8 @@ final class PoolThreadCache {
     }
 
     private static final class FreeOnFinalize {
-        private final PoolThreadCache cache;
+
+        private volatile PoolThreadCache cache;
 
         private FreeOnFinalize(PoolThreadCache cache) {
             this.cache = cache;
@@ -497,7 +487,13 @@ final class PoolThreadCache {
             try {
                 super.finalize();
             } finally {
-                cache.free(true);
+                PoolThreadCache cache = this.cache;
+                // this can race with a non-finalizer thread calling free: regardless who wins, the cache will be
+                // null out
+                this.cache = null;
+                if (cache != null) {
+                    cache.free(true);
+                }
             }
         }
     }

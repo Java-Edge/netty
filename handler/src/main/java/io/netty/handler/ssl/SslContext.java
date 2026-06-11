@@ -24,8 +24,10 @@ import io.netty.channel.ChannelPipeline;
 import io.netty.handler.ssl.ApplicationProtocolConfig.Protocol;
 import io.netty.handler.ssl.ApplicationProtocolConfig.SelectedListenerFailureBehavior;
 import io.netty.handler.ssl.ApplicationProtocolConfig.SelectorFailureBehavior;
+import io.netty.handler.ssl.util.BouncyCastleUtil;
 import io.netty.util.AttributeMap;
 import io.netty.util.DefaultAttributeMap;
+import io.netty.util.concurrent.ImmediateExecutor;
 import io.netty.util.internal.EmptyArrays;
 import io.netty.util.internal.PlatformDependent;
 
@@ -58,6 +60,7 @@ import java.security.KeyStore;
 import java.security.KeyStoreException;
 import java.security.NoSuchAlgorithmException;
 import java.security.PrivateKey;
+import java.security.SecureRandom;
 import java.security.UnrecoverableKeyException;
 import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
@@ -104,6 +107,7 @@ public abstract class SslContext {
 
     private final boolean startTls;
     private final AttributeMap attributes = new DefaultAttributeMap();
+    final ResumptionController resumptionController;
     private static final String OID_PKCS5_PBES2 = "1.2.840.113549.1.5.13";
     private static final String PBES2 = "PBES2";
 
@@ -441,7 +445,7 @@ public abstract class SslContext {
                                             toPrivateKey(keyFile, keyPassword),
                                             keyPassword, keyManagerFactory, ciphers, cipherFilter, apn,
                                             sessionCacheSize, sessionTimeout, ClientAuth.NONE, null,
-                                            false, false, keyStore);
+                                            false, false, null, keyStore);
         } catch (Exception e) {
             if (e instanceof SSLException) {
                 throw (SSLException) e;
@@ -457,12 +461,15 @@ public abstract class SslContext {
             X509Certificate[] keyCertChain, PrivateKey key, String keyPassword, KeyManagerFactory keyManagerFactory,
             Iterable<String> ciphers, CipherSuiteFilter cipherFilter, ApplicationProtocolConfig apn,
             long sessionCacheSize, long sessionTimeout, ClientAuth clientAuth, String[] protocols, boolean startTls,
-            boolean enableOcsp, String keyStoreType, Map.Entry<SslContextOption<?>, Object>... ctxOptions)
+            boolean enableOcsp, SecureRandom secureRandom, String keyStoreType,
+            Map.Entry<SslContextOption<?>, Object>... ctxOptions)
             throws SSLException {
 
         if (provider == null) {
             provider = defaultServerProvider();
         }
+
+        ResumptionController resumptionController = new ResumptionController();
 
         switch (provider) {
         case JDK:
@@ -472,19 +479,19 @@ public abstract class SslContext {
             return new JdkSslServerContext(sslContextProvider,
                     trustCertCollection, trustManagerFactory, keyCertChain, key, keyPassword,
                     keyManagerFactory, ciphers, cipherFilter, apn, sessionCacheSize, sessionTimeout,
-                    clientAuth, protocols, startTls, keyStoreType);
+                    clientAuth, protocols, startTls, secureRandom, keyStoreType, resumptionController);
         case OPENSSL:
             verifyNullSslContextProvider(provider, sslContextProvider);
             return new OpenSslServerContext(
                     trustCertCollection, trustManagerFactory, keyCertChain, key, keyPassword,
                     keyManagerFactory, ciphers, cipherFilter, apn, sessionCacheSize, sessionTimeout,
-                    clientAuth, protocols, startTls, enableOcsp, keyStoreType, ctxOptions);
+                    clientAuth, protocols, startTls, enableOcsp, keyStoreType, resumptionController, ctxOptions);
         case OPENSSL_REFCNT:
             verifyNullSslContextProvider(provider, sslContextProvider);
             return new ReferenceCountedOpenSslServerContext(
                     trustCertCollection, trustManagerFactory, keyCertChain, key, keyPassword,
                     keyManagerFactory, ciphers, cipherFilter, apn, sessionCacheSize, sessionTimeout,
-                    clientAuth, protocols, startTls, enableOcsp, keyStoreType, ctxOptions);
+                    clientAuth, protocols, startTls, enableOcsp, keyStoreType, resumptionController, ctxOptions);
         default:
             throw new Error(provider.toString());
         }
@@ -801,7 +808,7 @@ public abstract class SslContext {
                                             toX509Certificates(keyCertChainFile), toPrivateKey(keyFile, keyPassword),
                                             keyPassword, keyManagerFactory, ciphers, cipherFilter,
                                             apn, null, sessionCacheSize, sessionTimeout, false,
-                                            KeyStore.getDefaultType());
+                                            null, KeyStore.getDefaultType(), null);
         } catch (Exception e) {
             if (e instanceof SSLException) {
                 throw (SSLException) e;
@@ -816,11 +823,15 @@ public abstract class SslContext {
             X509Certificate[] trustCert, TrustManagerFactory trustManagerFactory,
             X509Certificate[] keyCertChain, PrivateKey key, String keyPassword, KeyManagerFactory keyManagerFactory,
             Iterable<String> ciphers, CipherSuiteFilter cipherFilter, ApplicationProtocolConfig apn, String[] protocols,
-            long sessionCacheSize, long sessionTimeout, boolean enableOcsp, String keyStoreType,
+            long sessionCacheSize, long sessionTimeout, boolean enableOcsp,
+            SecureRandom secureRandom, String keyStoreType, String endpointIdentificationAlgorithm,
             Map.Entry<SslContextOption<?>, Object>... options) throws SSLException {
         if (provider == null) {
             provider = defaultClientProvider();
         }
+
+        ResumptionController resumptionController = new ResumptionController();
+
         switch (provider) {
             case JDK:
                 if (enableOcsp) {
@@ -829,21 +840,22 @@ public abstract class SslContext {
                 return new JdkSslClientContext(sslContextProvider,
                         trustCert, trustManagerFactory, keyCertChain, key, keyPassword,
                         keyManagerFactory, ciphers, cipherFilter, apn, protocols, sessionCacheSize,
-                        sessionTimeout, keyStoreType);
+                        sessionTimeout, secureRandom, keyStoreType, endpointIdentificationAlgorithm,
+                        resumptionController);
             case OPENSSL:
                 verifyNullSslContextProvider(provider, sslContextProvider);
                 OpenSsl.ensureAvailability();
                 return new OpenSslClientContext(
                         trustCert, trustManagerFactory, keyCertChain, key, keyPassword,
                         keyManagerFactory, ciphers, cipherFilter, apn, protocols, sessionCacheSize, sessionTimeout,
-                        enableOcsp, keyStoreType, options);
+                        enableOcsp, keyStoreType, endpointIdentificationAlgorithm, resumptionController, options);
             case OPENSSL_REFCNT:
                 verifyNullSslContextProvider(provider, sslContextProvider);
                 OpenSsl.ensureAvailability();
                 return new ReferenceCountedOpenSslClientContext(
                         trustCert, trustManagerFactory, keyCertChain, key, keyPassword,
                         keyManagerFactory, ciphers, cipherFilter, apn, protocols, sessionCacheSize, sessionTimeout,
-                        enableOcsp, keyStoreType, options);
+                        enableOcsp, keyStoreType, endpointIdentificationAlgorithm, resumptionController, options);
             default:
                 throw new Error(provider.toString());
         }
@@ -872,7 +884,12 @@ public abstract class SslContext {
      * Creates a new instance.
      */
     protected SslContext(boolean startTls) {
+        this(startTls, null);
+    }
+
+    SslContext(boolean startTls, ResumptionController resumptionController) {
         this.startTls = startTls;
+        this.resumptionController = resumptionController;
     }
 
     /**
@@ -964,7 +981,7 @@ public abstract class SslContext {
      * @see #newHandler(ByteBufAllocator)
      */
     protected SslHandler newHandler(ByteBufAllocator alloc, boolean startTls) {
-        return new SslHandler(newEngine(alloc), startTls);
+        return new SslHandler(newEngine(alloc), startTls, ImmediateExecutor.INSTANCE, resumptionController);
     }
 
     /**
@@ -1001,7 +1018,7 @@ public abstract class SslContext {
      * @see #newHandler(ByteBufAllocator, String, int, boolean, Executor)
      */
     protected SslHandler newHandler(ByteBufAllocator alloc, boolean startTls, Executor executor) {
-        return new SslHandler(newEngine(alloc), startTls, executor);
+        return new SslHandler(newEngine(alloc), startTls, executor, resumptionController);
     }
 
     /**
@@ -1018,7 +1035,8 @@ public abstract class SslContext {
      * @see #newHandler(ByteBufAllocator, String, int, boolean, Executor)
      */
     protected SslHandler newHandler(ByteBufAllocator alloc, String peerHost, int peerPort, boolean startTls) {
-        return new SslHandler(newEngine(alloc, peerHost, peerPort), startTls);
+        return new SslHandler(newEngine(alloc, peerHost, peerPort), startTls, ImmediateExecutor.INSTANCE,
+                resumptionController);
     }
 
     /**
@@ -1056,7 +1074,8 @@ public abstract class SslContext {
 
     protected SslHandler newHandler(ByteBufAllocator alloc, String peerHost, int peerPort, boolean startTls,
                                     Executor delegatedTaskExecutor) {
-        return new SslHandler(newEngine(alloc, peerHost, peerPort), startTls, delegatedTaskExecutor);
+        return new SslHandler(newEngine(alloc, peerHost, peerPort), startTls, delegatedTaskExecutor,
+                resumptionController);
     }
 
     /**
@@ -1157,7 +1176,7 @@ public abstract class SslContext {
         }
 
         // try BC first, if this fail fallback to original key extraction process
-        if (tryBouncyCastle && BouncyCastlePemReader.isAvailable()) {
+        if (tryBouncyCastle && BouncyCastleUtil.isBcPkixAvailable()) {
             PrivateKey pk = BouncyCastlePemReader.getPrivateKey(keyFile, keyPassword);
             if (pk != null) {
                 return pk;
@@ -1177,7 +1196,7 @@ public abstract class SslContext {
         }
 
         // try BC first, if this fail fallback to original key extraction process
-        if (BouncyCastlePemReader.isAvailable()) {
+        if (BouncyCastleUtil.isBcPkixAvailable()) {
             if (!keyInputStream.markSupported()) {
                 // We need an input stream that supports resetting, in case BouncyCastle fails to read.
                 keyInputStream = new BufferedInputStream(keyInputStream);
